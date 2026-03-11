@@ -36,10 +36,16 @@ A complete desktop image editing application built with Python and Tkinter.
 - Text overlay with automatic font detection and matching
 
 ### Text Selection, Replacement & Deletion
+- **🎯 AUTO-DETECTION (NEW!)**: Automatically detects and matches ALL original text properties
+  - Exact color matching (white stays white, red stays red)
+  - Font style preservation (bold, italic)
+  - Shadow and outline detection
+  - Font family matching
+  - Result: Replacement text is visually identical to original
 - **Photorealistic Editing**: Edits are completely undetectable to the human eye
 - **Smart Background Reconstruction**: Automatically detects solid, gradient, or textured backgrounds
 - **Intelligent Inpainting**: Uses OpenCV TELEA algorithm for complex textures
-- **Professional Text Rendering**: 4x resolution anti-aliasing for smooth edges
+- **Professional Text Rendering**: 3x resolution anti-aliasing for smooth edges
 - **Style Matching**: Detects and preserves bold, italic, shadows, and outlines
 - **Grain Matching**: Preserves film grain and noise patterns
 - **Brightness Matching**: Edited regions match surrounding lighting conditions
@@ -50,6 +56,7 @@ A complete desktop image editing application built with Python and Tkinter.
 - Automatic font color detection
 - Batch operations (replace all / delete all)
 - Real-time preview of changes
+- Property display: Shows detected font, size, color, and style
 
 ### Smart Font Matching
 - Automatically matches closest available system font
@@ -160,15 +167,30 @@ The application automatically detects fonts in your image and matches the closes
 
 ### Finding, Replacing & Deleting Text
 
+**NEW: Auto-Detection Feature**
+The application now automatically detects and matches ALL properties from the original text:
+- ✅ Exact color matching (white text stays white, red stays red)
+- ✅ Font style (bold, italic)
+- ✅ Shadows and outlines
+- ✅ Font family and size
+
+**Basic Workflow:**
 1. Click "🔍 Detect Text in Image" to scan for text (first run downloads OCR model)
 2. Select a text block from the list
-3. The selected text will be highlighted in yellow on the canvas
-4. Enter replacement text in the "Replace with" field (or leave empty to delete)
-5. Choose color: "■ Auto-detect" or "🎨 Pick Color"
-6. Click "✏️ Replace Selected" to replace just that block
-7. Click "🗑️ Delete Selected" to remove the text
-8. Click "🔄 Replace All" to replace all matching text
-9. Click "🗑️ Delete All" to remove all detected text
+3. **See detected properties**: `🔍 Detected: Helvetica 24pt | Color: #FF0000 | Bold, Shadow`
+4. Enter replacement text in the "Replace with" field
+5. **Auto-detect is default**: Leave color on "■ Auto-detect" for perfect matching
+6. Click "✏️ Replace Selected" - replacement will match original exactly!
+
+**Manual Override (Optional):**
+- Click "🎨 Pick Color" to manually choose a different color
+- Useful when you want to intentionally change the color
+
+**Actions:**
+- "✏️ Replace Selected": Replace just the selected text block
+- "🗑️ Delete Selected": Remove the selected text
+- "🔄 Replace All": Replace all matching text blocks
+- "🗑️ Delete All": Remove all detected text
 
 **Keyboard Shortcuts:**
 - `Ctrl+F`: Open text detection panel and scan for text

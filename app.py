@@ -94,6 +94,7 @@ class ImageEditorApp:
             'highlight': self.highlight_text_block,
             'clear_highlight': self.clear_text_highlight,
             'detect_color': self.detect_block_color,
+            'extract_properties': self.extract_text_properties,
             'replace': self.replace_text_block,
             'replace_all': self.replace_all_text,
             'delete': self.delete_text_block,
@@ -380,6 +381,14 @@ class ImageEditorApp:
         """Clear text block highlight."""
         self.canvas.clear_highlight()
     
+    def extract_text_properties(self, block):
+        """Extract all properties from text block."""
+        if self.current_image is None:
+            return {}
+        
+        from editor.text_editor import extract_text_properties
+        return extract_text_properties(self.current_image, block)
+    
     def detect_block_color(self, block):
         """Detect color of text block."""
         if self.current_image is None:
@@ -387,24 +396,25 @@ class ImageEditorApp:
         
         return detect_text_color(self.current_image, block)
     
-    def replace_text_block(self, block, new_text: str, color: tuple):
+    def replace_text_block(self, block, new_text: str, color: tuple = None):
         """Replace a single text block with photorealistic rendering."""
         if self.current_image is None:
             return
         
         try:
+            # Pass color as None if not manually set (will use auto-detected)
             img = professional_replace_text(
                 self.current_image,
                 block,
                 new_text,
                 self.matched_font,
-                color
+                color  # None = use auto-detected properties
             )
             self.commit_change(img)
         except Exception as e:
             raise e
     
-    def replace_all_text(self, target_text: str, new_text: str, color: tuple):
+    def replace_all_text(self, target_text: str, new_text: str, color: tuple = None):
         """Replace all occurrences of target text with photorealistic rendering."""
         if self.current_image is None:
             return
@@ -415,6 +425,7 @@ class ImageEditorApp:
             
             for block in blocks:
                 if block.text.lower() == target_text.lower():
+                    # Pass color as None if not manually set (will use auto-detected)
                     img = professional_replace_text(img, block, new_text, self.matched_font, color)
             
             self.commit_change(img)

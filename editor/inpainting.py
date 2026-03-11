@@ -4,10 +4,9 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 from scipy.ndimage import gaussian_filter
 from typing import Tuple
-from editor.text_editor import TextBlock
 
 
-def analyze_background_type(pil_image: Image.Image, block: TextBlock) -> dict:
+def analyze_background_type(pil_image: Image.Image, block) -> dict:
     """
     Analyze background texture type around text block.
     
@@ -60,7 +59,7 @@ def analyze_background_type(pil_image: Image.Image, block: TextBlock) -> dict:
     }
 
 
-def inpaint_solid_background(pil_image: Image.Image, block: TextBlock, bg_info: dict) -> Image.Image:
+def inpaint_solid_background(pil_image: Image.Image, block, bg_info: dict) -> Image.Image:
     """Inpaint solid color background."""
     img = pil_image.copy()
     
@@ -94,7 +93,7 @@ def inpaint_solid_background(pil_image: Image.Image, block: TextBlock, bg_info: 
     return img
 
 
-def inpaint_gradient_background(pil_image: Image.Image, block: TextBlock, bg_info: dict) -> Image.Image:
+def inpaint_gradient_background(pil_image: Image.Image, block, bg_info: dict) -> Image.Image:
     """Inpaint gradient background with directional color interpolation."""
     img = pil_image.copy()
     np_img = np.array(img)
@@ -164,7 +163,7 @@ def inpaint_gradient_background(pil_image: Image.Image, block: TextBlock, bg_inf
     return Image.fromarray(np_img)
 
 
-def inpaint_textured_background(pil_image: Image.Image, block: TextBlock) -> Image.Image:
+def inpaint_textured_background(pil_image: Image.Image, block) -> Image.Image:
     """Inpaint textured/photo background using OpenCV's intelligent inpainting."""
     # Convert PIL to OpenCV format
     cv_img = cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2BGR)
@@ -206,7 +205,7 @@ def inpaint_textured_background(pil_image: Image.Image, block: TextBlock) -> Ima
     return Image.fromarray(result_np)
 
 
-def smart_inpaint_region(pil_image: Image.Image, block: TextBlock) -> Image.Image:
+def smart_inpaint_region(pil_image: Image.Image, block) -> Image.Image:
     """
     Intelligently inpaint text region based on background type.
     
@@ -224,7 +223,7 @@ def smart_inpaint_region(pil_image: Image.Image, block: TextBlock) -> Image.Imag
         return inpaint_textured_background(pil_image, block)
 
 
-def detect_text_style(pil_image: Image.Image, block: TextBlock) -> dict:
+def detect_text_style(pil_image: Image.Image, block) -> dict:
     """
     Detect text rendering style (shadow, outline, etc.).
     
@@ -261,53 +260,56 @@ def detect_text_style(pil_image: Image.Image, block: TextBlock) -> dict:
     }
 
 
-def render_native_text(
+def render_matched_text(
     image: Image.Image,
-    block: TextBlock,
+    block,
     new_text: str,
-    font_path: str,
-    color: Tuple[int, int, int],
-    font_size: int
+    properties: dict
 ) -> Image.Image:
     """
-    Render text with photorealistic anti-aliasing and style matching.
+    Render replacement text with ALL original properties matched exactly.
+    Uses properties dict from extract_text_properties().
     
-    Returns image with new text rendered.
+    Args:
+        image: Image to draw on
+        block: Original text block
+        new_text: Replacement text
+        properties: Dict with all detected properties
+    
+    Returns:
+        Image with text rendered matching original style
     """
     img = image.copy()
     
-    # Detect original text style
-    style = detect_text_style(image, block)
-    
-    # Render at 4x resolution for better anti-aliasing
-    scale = 4
+    # Render at 3x resolution for anti-aliasing
+    scale = 3
     high_res_size = (block.width * scale, block.height * scale)
-    
-    # Create high-resolution transparent layer
     text_layer = Image.new('RGBA', high_res_size, (0, 0, 0, 0))
     draw = ImageDraw.Draw(text_layer)
     
-    # Load font at high resolution
+    # Load font with detected properties
+    font_path = properties['best_font_path']
+    font_size = properties['font_size'] * scale
+    
     try:
         if font_path and font_path != "default":
-            font = ImageFont.truetype(font_path, font_size * scale)
+            font = ImageFont.truetype(font_path, font_size)
         else:
             font = ImageFont.load_default()
     except:
         font = ImageFont.load_default()
     
-    # Calculate text position (centered in block)
+    # Calculate text position
     bbox = draw.textbbox((0, 0), new_text, font=font)
     text_width = bbox[2] - bbox[0]
     text_height = bbox[3] - bbox[1]
     
-    # Adjust font size if text doesn't fit
-    current_font_size = font_size * scale
-    while text_width > high_res_size[0] and current_font_size > 8 * scale:
-        current_font_size -= scale
+    # Auto-adjust font size if text doesn't fit
+    while text_width > high_res_size[0] and font_size > 8 * scale:
+        font_size -= scale
         try:
             if font_path and font_path != "default":
-                font = ImageFont.truetype(font_path, current_font_size)
+                font = ImageFont.truetype(font_path, font_size)
             else:
                 font = ImageFont.load_default()
         except:
@@ -320,25 +322,42 @@ def render_native_text(
     text_y = (high_res_size[1] - text_height) // 2
     
     # Render shadow if detected
-    if style['has_shadow']:
-        shadow_color = tuple(max(0, c - 80) for c in color)
-        shadow_offset = (style['shadow_offset'][0] * scale, style['shadow_offset'][1] * scale)
-        draw.text((text_x + shadow_offset[0], text_y + shadow_offset[1]), 
-                  new_text, fill=shadow_color + (180,), font=font)
+    if properties['has_shadow']:
+        shadow_offset = (properties['shadow_offset'][0] * scale, 
+                        properties['shadow_offset'][1] * scale)
+        shadow_color = properties['shadow_color'] + (180,)
+        draw.text((text_x + shadow_offset[0], text_y + shadow_offset[1]),
+                 new_text, fill=shadow_color, font=font)
     
-    # Render main text
-    draw.text((text_x, text_y), new_text, fill=color + (255,), font=font)
+    # Render outline if detected
+    if properties['has_outline']:
+        outline_color = properties['outline_color'] + (255,)
+        outline_width = properties['outline_width'] * scale
+        # Draw outline by rendering text in 8 directions
+        for dx in [-outline_width, 0, outline_width]:
+            for dy in [-outline_width, 0, outline_width]:
+                if dx != 0 or dy != 0:
+                    draw.text((text_x + dx, text_y + dy), new_text, 
+                             fill=outline_color, font=font)
     
-    # Downscale with high-quality resampling for anti-aliasing
+    # Render main text with EXACT detected color
+    text_color = properties['color'] + (int(properties['opacity'] * 255),)
+    draw.text((text_x, text_y), new_text, fill=text_color, font=font)
+    
+    # Simulate bold if needed and font doesn't have bold variant
+    if properties['is_bold'] and 'bold' not in font_path.lower():
+        draw.text((text_x + 1, text_y), new_text, fill=text_color, font=font)
+    
+    # Downscale with high-quality resampling
     text_layer = text_layer.resize((block.width, block.height), Image.Resampling.LANCZOS)
     
-    # Paste text layer onto image with alpha blending
+    # Paste with alpha blending
     img.paste(text_layer, (block.x, block.y), text_layer)
     
     return img
 
 
-def match_image_grain(original: Image.Image, edited: Image.Image, block: TextBlock) -> Image.Image:
+def match_image_grain(original: Image.Image, edited: Image.Image, block) -> Image.Image:
     """
     Match film grain and noise from original to edited region.
     """
@@ -369,7 +388,7 @@ def match_image_grain(original: Image.Image, edited: Image.Image, block: TextBlo
     return Image.fromarray(edit_np)
 
 
-def match_local_brightness(original: Image.Image, edited: Image.Image, block: TextBlock) -> Image.Image:
+def match_local_brightness(original: Image.Image, edited: Image.Image, block) -> Image.Image:
     """
     Match brightness and contrast of edited region to surroundings.
     """
@@ -417,7 +436,7 @@ def match_local_brightness(original: Image.Image, edited: Image.Image, block: Te
 def post_process_edit(
     original_image: Image.Image,
     edited_image: Image.Image,
-    block: TextBlock
+    block
 ) -> Image.Image:
     """
     Apply post-processing to make edit indistinguishable from original.
@@ -435,28 +454,41 @@ def post_process_edit(
 
 def professional_replace_text(
     pil_image: Image.Image,
-    block: TextBlock,
+    block,
     new_text: str,
-    font_path: str,
-    color: Tuple[int, int, int],
+    font_path: str = None,
+    color: Tuple[int, int, int] = None,
     font_size: int = None
 ) -> Image.Image:
     """
     Professional-grade text replacement with photorealistic results.
     
+    CRITICAL: This function AUTO-DETECTS all properties from original text.
+    The font_path and color parameters are OPTIONAL overrides only.
+    If not provided, properties are extracted from the original text.
+    
     This is the master function that combines all techniques.
     """
-    # Use estimated font size if not provided
-    if font_size is None:
-        font_size = block.font_size_estimate
+    from editor.text_editor import extract_text_properties
     
-    # Step 1: Remove original text with intelligent inpainting
+    # Step 1: Extract ALL properties from original text FIRST
+    properties = extract_text_properties(pil_image, block)
+    
+    # Allow manual overrides (but default to auto-detected)
+    if color is not None:
+        properties['color'] = color
+    if font_path is not None and font_path != "default":
+        properties['best_font_path'] = font_path
+    if font_size is not None:
+        properties['font_size'] = font_size
+    
+    # Step 2: Remove original text with intelligent inpainting
     img = smart_inpaint_region(pil_image, block)
     
-    # Step 2: Render new text with anti-aliasing and style matching
-    img = render_native_text(img, block, new_text, font_path, color, font_size)
+    # Step 3: Render new text with ALL matched properties
+    img = render_matched_text(img, block, new_text, properties)
     
-    # Step 3: Post-process to match grain and lighting
+    # Step 4: Post-process to match grain and lighting
     img = post_process_edit(pil_image, img, block)
     
     return img
@@ -464,7 +496,7 @@ def professional_replace_text(
 
 def professional_delete_text(
     pil_image: Image.Image,
-    block: TextBlock
+    block
 ) -> Image.Image:
     """
     Professional-grade text deletion with photorealistic background reconstruction.

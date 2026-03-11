@@ -15,6 +15,7 @@ class TextSelectPanel:
         self.selected_block = None
         self.auto_color = (0, 0, 0)
         self.custom_color = None
+        self.detected_properties = None  # Store all detected properties
         
         self.frame = ttk.LabelFrame(parent, text="🔤 Text Select & Replace", padding=10)
         self.frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
@@ -56,7 +57,16 @@ class TextSelectPanel:
         
         # Selected block label
         self.selected_label = ttk.Label(self.frame, text="Selected: None", foreground="gray")
-        self.selected_label.pack(anchor=tk.W, pady=(0, 10))
+        self.selected_label.pack(anchor=tk.W, pady=(0, 5))
+        
+        # Detected properties display
+        self.properties_label = ttk.Label(
+            self.frame, 
+            text="",
+            foreground="blue",
+            font=("TkDefaultFont", 9)
+        )
+        self.properties_label.pack(anchor=tk.W, pady=(0, 10))
         
         # Replacement text entry
         ttk.Label(self.frame, text="Replace with:").pack(anchor=tk.W)
@@ -171,6 +181,7 @@ class TextSelectPanel:
         if not selection:
             self.selected_block = None
             self.selected_label.config(text="Selected: None", foreground="gray")
+            self.properties_label.config(text="")
             self.callbacks['clear_highlight']()
             return
         
@@ -181,9 +192,28 @@ class TextSelectPanel:
             foreground="black"
         )
         
-        # Auto-detect color
-        self.auto_color = self.callbacks['detect_color'](self.selected_block)
-        self.custom_color = None
+        # Extract ALL properties from original text
+        self.detected_properties = self.callbacks['extract_properties'](self.selected_block)
+        self.auto_color = self.detected_properties['color']
+        self.custom_color = None  # Reset to auto mode
+        
+        # Display detected properties
+        from utils.color_utils import rgb_to_hex
+        color_hex = rgb_to_hex(self.auto_color)
+        font_name = self.detected_properties['best_font_path'].split('/')[-1] if self.detected_properties['best_font_path'] != 'default' else 'Default'
+        style_info = []
+        if self.detected_properties['is_bold']:
+            style_info.append('Bold')
+        if self.detected_properties['is_italic']:
+            style_info.append('Italic')
+        if self.detected_properties['has_shadow']:
+            style_info.append('Shadow')
+        if self.detected_properties['has_outline']:
+            style_info.append('Outline')
+        
+        style_str = ', '.join(style_info) if style_info else 'Regular'
+        props_text = f"🔍 Detected: {font_name} {self.detected_properties['font_size']}pt | Color: {color_hex} | {style_str}"
+        self.properties_label.config(text=props_text)
         
         # Highlight on canvas
         self.callbacks['highlight'](self.selected_block)
@@ -192,13 +222,20 @@ class TextSelectPanel:
         """Clear block selection."""
         self.blocks_listbox.selection_clear(0, tk.END)
         self.selected_block = None
+        self.detected_properties = None
         self.selected_label.config(text="Selected: None", foreground="gray")
+        self.properties_label.config(text="")
         self.callbacks['clear_highlight']()
     
     def _use_auto_color(self):
         """Use auto-detected color."""
         self.custom_color = None
-        messagebox.showinfo("Auto Color", f"Using auto-detected color: RGB{self.auto_color}")
+        if self.detected_properties:
+            from utils.color_utils import rgb_to_hex
+            color_hex = rgb_to_hex(self.auto_color)
+            messagebox.showinfo("Auto Color", f"Using auto-detected color: {color_hex} RGB{self.auto_color}")
+        else:
+            messagebox.showinfo("Auto Color", "Select a text block first to detect color.")
     
     def _pick_color(self):
         """Pick custom color."""
@@ -208,7 +245,8 @@ class TextSelectPanel:
     
     def _get_current_color(self):
         """Get current color (custom or auto)."""
-        return self.custom_color if self.custom_color else self.auto_color
+        # Return None if using auto-detected (let the backend use extracted properties)
+        return self.custom_color
     
     def _replace_selected(self):
         """Replace selected text block."""
@@ -226,7 +264,8 @@ class TextSelectPanel:
                 return
         
         try:
-            color = self._get_current_color()
+            # Use custom color if set, otherwise None (will use auto-detected)
+            color = self.custom_color if self.custom_color else None
             self.callbacks['replace'](self.selected_block, new_text, color)
             
             # Refresh detection
@@ -285,7 +324,8 @@ class TextSelectPanel:
             return
         
         try:
-            color = self._get_current_color()
+            # Use custom color if set, otherwise None (will use auto-detected)
+            color = self.custom_color if self.custom_color else None
             self.callbacks['replace_all'](target_text, new_text, color)
             
             # Refresh detection

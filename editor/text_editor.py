@@ -2,8 +2,10 @@
 from dataclasses import dataclass
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 import numpy as np
+import cv2
 from collections import Counter
 from utils.ocr_engine import OCREngine
+from utils.font_matcher import match_font_with_style
 
 
 @dataclass
@@ -231,9 +233,122 @@ def delete_multiple_regions(
     return img
 
 
+def extract_text_properties(pil_image: Image.Image, block: TextBlock) -> dict:
+    """
+    Extract ALL text properties from original text block.
+    This is called BEFORE erasing to capture exact visual properties.
+    
+    Returns dict with:
+        color, background_color, font_size, is_bold, is_italic,
+        has_shadow, shadow_color, shadow_offset, has_outline,
+        outline_color, outline_width, opacity, letter_spacing, best_font_path
+    """
+    # Crop exact bounding box
+    x1, y1 = max(0, block.x), max(0, block.y)
+    x2 = min(pil_image.width, block.x + block.width)
+    y2 = min(pil_image.height, block.y + block.height)
+    region = pil_image.crop((x1, y1, x2, y2))
+    np_region = np.array(region)
+    
+    # Convert to grayscale for binary mask
+    gray = cv2.cvtColor(np_region, cv2.COLOR_RGB2GRAY)
+    _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    
+    # Determine if text is dark or light
+    text_is_dark = np.mean(gray) > 127
+    if text_is_dark:
+        binary = cv2.bitwise_not(binary)
+    
+    # Extract text and background pixels
+    text_mask = binary == 255
+    bg_mask = binary == 0
+    
+    if np.any(text_mask):
+        text_pixels = np_region[text_mask]
+        text_color = tuple(int(x) for x in np.median(text_pixels, axis=0))
+    else:
+        text_color = (0, 0, 0)
+    
+    if np.any(bg_mask):
+        bg_pixels = np_region[bg_mask]
+        bg_color = tuple(int(x) for x in np.median(bg_pixels, axis=0))
+    else:
+        bg_color = (255, 255, 255)
+    
+    # Detect bold from edge thickness
+    edges = cv2.Canny(gray, 50, 150)
+    if np.any(edges):
+        dist_transform = cv2.distanceTransform(binary, cv2.DIST_L2, 3)
+        avg_stroke = np.mean(dist_transform[dist_transform > 0]) if np.any(dist_transform > 0) else 1
+        is_bold = avg_stroke > 2.5
+    else:
+        is_bold = False
+    
+    # Detect italic from character slant
+    contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    is_italic = False
+    if contours:
+        angles = []
+        for cnt in contours:
+            if len(cnt) >= 5:
+                rect = cv2.minAreaRect(cnt)
+                angle = abs(rect[2])
+                if angle > 5 and angle < 85:
+                    angles.append(angle)
+        if angles and np.mean(angles) > 5:
+            is_italic = True
+    
+    # Detect shadow (check region below-right)
+    has_shadow = False
+    shadow_color = (0, 0, 0)
+    shadow_offset = (0, 0)
+    if block.y + block.height + 3 < pil_image.height and block.x + block.width + 3 < pil_image.width:
+        shadow_region = np.array(pil_image.crop((block.x + 1, block.y + 1,
+                                                   block.x + block.width + 3,
+                                                   block.y + block.height + 3)))
+        if np.mean(shadow_region) < np.mean(np_region) - 25:
+            has_shadow = True
+            shadow_color = tuple(int(x) for x in np.median(shadow_region.reshape(-1, 3), axis=0))
+            shadow_offset = (1, 1)
+    
+    # Detect outline (check border pixels)
+    kernel = np.ones((3, 3), np.uint8)
+    dilated = cv2.dilate(binary, kernel, iterations=1)
+    outline_mask = dilated - binary
+    has_outline = np.sum(outline_mask) > (block.width + block.height) * 2
+    if has_outline and np.any(outline_mask):
+        outline_pixels = np_region[outline_mask > 0]
+        outline_color = tuple(int(x) for x in np.median(outline_pixels, axis=0))
+        outline_width = 1
+    else:
+        outline_color = (0, 0, 0)
+        outline_width = 0
+    
+    # Match font based on detected style
+    best_font_path = match_font_with_style(is_bold, is_italic)
+    
+    return {
+        'color': text_color,
+        'background_color': bg_color,
+        'font_size': block.font_size_estimate,
+        'is_bold': is_bold,
+        'is_italic': is_italic,
+        'has_shadow': has_shadow,
+        'shadow_color': shadow_color,
+        'shadow_offset': shadow_offset,
+        'has_outline': has_outline,
+        'outline_color': outline_color,
+        'outline_width': outline_width,
+        'opacity': 1.0,
+        'letter_spacing': 0,
+        'best_font_path': best_font_path
+    }
+
+
 def detect_text_color(pil_image: Image.Image, block: TextBlock) -> tuple[int, int, int]:
     """
     Auto-detect text color from block region.
+    This is a simplified version that calls extract_text_properties.
     
     Args:
         pil_image: Source image
@@ -242,35 +357,11 @@ def detect_text_color(pil_image: Image.Image, block: TextBlock) -> tuple[int, in
     Returns:
         RGB color tuple
     """
-    # Crop center 50% of block
-    center_x = block.x + block.width // 4
-    center_y = block.y + block.height // 4
-    center_w = block.width // 2
-    center_h = block.height // 2
-    
     try:
-        region = pil_image.crop((center_x, center_y, center_x + center_w, center_y + center_h))
-        np_region = np.array(region)
-        pixels = np_region.reshape(-1, 3)
-        
-        # Find background color (most common)
-        pixel_tuples = [tuple(p) for p in pixels]
-        bg_color = Counter(pixel_tuples).most_common(1)[0][0]
-        
-        # Filter out background pixels
-        filtered = []
-        for p in pixel_tuples:
-            dist = sum((a - b) ** 2 for a, b in zip(p, bg_color)) ** 0.5
-            if dist > 30:
-                filtered.append(p)
-        
-        if filtered:
-            text_color = Counter(filtered).most_common(1)[0][0]
-            return text_color
+        props = extract_text_properties(pil_image, block)
+        return props['color']
     except:
-        pass
-    
-    return (0, 0, 0)
+        return (0, 0, 0)
 
 
 def replace_all_matching(
