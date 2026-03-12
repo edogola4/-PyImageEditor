@@ -60,36 +60,22 @@ def analyze_background_type(pil_image: Image.Image, block) -> dict:
 
 
 def inpaint_solid_background(pil_image: Image.Image, block, bg_info: dict) -> Image.Image:
-    """Inpaint solid color background."""
+    """Inpaint solid color background with NO blur."""
     img = pil_image.copy()
     
     # Compute median color from border pixels
     median_color = tuple(np.median(bg_info['pixels'], axis=0).astype(int))
     
-    # Create a slightly larger region for feathering
-    padding = 2
-    x1 = max(0, block.x - padding)
-    y1 = max(0, block.y - padding)
-    x2 = min(img.width, block.x + block.width + padding)
-    y2 = min(img.height, block.y + block.height + padding)
+    # Fill exact region with median color - NO padding, NO blur
+    x1 = max(0, block.x)
+    y1 = max(0, block.y)
+    x2 = min(img.width, block.x + block.width)
+    y2 = min(img.height, block.y + block.height)
     
-    # Fill with median color
+    # Fill with median color - sharp edges
     draw = ImageDraw.Draw(img)
     draw.rectangle([x1, y1, x2, y2], fill=median_color)
     
-    # Extract region and apply subtle blur at edges only
-    region = img.crop((x1, y1, x2, y2))
-    
-    # Create edge mask for feathering
-    edge_mask = Image.new('L', region.size, 255)
-    edge_draw = ImageDraw.Draw(edge_mask)
-    edge_draw.rectangle([2, 2, region.width-2, region.height-2], fill=0)
-    
-    # Blur only the edges
-    blurred_region = region.filter(ImageFilter.GaussianBlur(radius=0.5))
-    region = Image.composite(blurred_region, region, edge_mask)
-    
-    img.paste(region, (x1, y1))
     return img
 
 
@@ -469,7 +455,7 @@ def professional_replace_text(
     
     This is the master function that combines all techniques.
     """
-    from editor.text_editor import extract_text_properties
+    from editor.text_editor import extract_text_properties, render_replacement_text
     
     # Step 1: Extract ALL properties from original text FIRST
     properties = extract_text_properties(pil_image, block)
@@ -485,11 +471,33 @@ def professional_replace_text(
     # Step 2: Remove original text with intelligent inpainting
     img = smart_inpaint_region(pil_image, block)
     
-    # Step 3: Render new text with ALL matched properties
-    img = render_matched_text(img, block, new_text, properties)
+    # Step 3: Render new text with SHARP rendering (NO blur)
+    # Use render_replacement_text from text_editor.py which renders at exact size
+    img = render_replacement_text(img, block, new_text, properties)
     
-    # Step 4: Post-process to match grain and lighting
-    img = post_process_edit(pil_image, img, block)
+    # Step 4: NO post-processing blur - keep text sharp
+    # Only match grain if significant noise exists
+    orig_np = np.array(pil_image)
+    edit_np = np.array(img)
+    
+    # Sample surrounding region for noise
+    padding = 10
+    x1 = max(0, block.x - padding)
+    y1 = max(0, block.y - padding)
+    x2 = min(pil_image.width, block.x + block.width + padding)
+    y2 = min(pil_image.height, block.y + block.height + padding)
+    
+    surround_region = orig_np[y1:y2, x1:x2]
+    if surround_region.size > 0:
+        noise_level = np.std(surround_region.astype(float) - gaussian_filter(surround_region.astype(float), sigma=1))
+        
+        # Only add grain if original has significant noise (> 5)
+        if noise_level > 5:
+            edit_region = edit_np[block.y:block.y+block.height, block.x:block.x+block.width]
+            noise = np.random.normal(0, noise_level * 0.3, edit_region.shape)
+            edit_region = np.clip(edit_region.astype(float) + noise, 0, 255).astype(np.uint8)
+            edit_np[block.y:block.y+block.height, block.x:block.x+block.width] = edit_region
+            img = Image.fromarray(edit_np)
     
     return img
 

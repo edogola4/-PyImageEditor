@@ -19,52 +19,59 @@ class TextBlock:
     conf: float
     font_size_estimate: int
     block_id: int
+    constituent_blocks: list = None
+    
+    def __post_init__(self):
+        if self.constituent_blocks is None:
+            self.constituent_blocks = []
 
 
 def detect_all_text(pil_image: Image.Image) -> list[TextBlock]:
     """
     Detect all text blocks in image using EasyOCR.
+    Returns line-level blocks (words on same line are merged).
     
     Returns:
         List of TextBlock objects with confidence > 0.40
     """
-    results = OCREngine.read_image(pil_image)
-    blocks = []
+    blocks = OCREngine.read_image(pil_image)
     
-    for idx, (bbox, text, conf) in enumerate(results):
-        if conf <= 0.40:
+    # Filter by confidence and clamp to image bounds
+    filtered_blocks = []
+    for block in blocks:
+        if block.conf <= 0.40:
             continue
         
-        # Convert bbox points to x, y, width, height
-        points = np.array(bbox)
-        x = int(points[:, 0].min())
-        y = int(points[:, 1].min())
-        x2 = int(points[:, 0].max())
-        y2 = int(points[:, 1].max())
+        if not block.text.strip():
+            continue
+        
+        # Clamp to image bounds
+        x = max(0, min(block.x, pil_image.width - 1))
+        y = max(0, min(block.y, pil_image.height - 1))
+        x2 = max(0, min(block.x + block.width, pil_image.width))
+        y2 = max(0, min(block.y + block.height, pil_image.height))
         width = x2 - x
         height = y2 - y
         
-        # Estimate font size from bounding box height
-        font_size_estimate = max(8, int(height * 0.8))
+        # Skip degenerate boxes
+        if width < 2 or height < 2:
+            continue
         
-        blocks.append(TextBlock(
-            text=text,
-            x=x,
-            y=y,
-            width=width,
-            height=height,
-            conf=conf,
-            font_size_estimate=font_size_estimate,
-            block_id=idx
-        ))
+        # Update block with clamped coordinates
+        block.x = x
+        block.y = y
+        block.width = width
+        block.height = height
+        
+        filtered_blocks.append(block)
     
-    return blocks
+    return filtered_blocks
 
 
 def erase_text_region(pil_image: Image.Image, block: TextBlock, padding: int = 6) -> Image.Image:
     """
     Erase text region with smart background inpainting.
-    CRITICAL: Blur is applied ONLY to background, NEVER after text is rendered.
+    CRITICAL: NO blur applied - background stays sharp.
     
     Args:
         pil_image: Source image
@@ -106,19 +113,8 @@ def erase_text_region(pil_image: Image.Image, block: TextBlock, padding: int = 6
     else:
         bg_color = (255, 255, 255)
     
-    # Fill region with background color
+    # Fill region with background color - NO blur
     draw.rectangle([x1, y1, x2, y2], fill=bg_color)
-    
-    # FIX 1: Blur ONLY the inpainted background region edges (feather blend)
-    # Crop slightly larger region for edge blending
-    blur_x1 = max(0, x1 - 2)
-    blur_y1 = max(0, y1 - 2)
-    blur_x2 = min(img.width, x2 + 2)
-    blur_y2 = min(img.height, y2 + 2)
-    
-    region = img.crop((blur_x1, blur_y1, blur_x2, blur_y2))
-    region = region.filter(ImageFilter.GaussianBlur(radius=0.8))
-    img.paste(region, (blur_x1, blur_y1))
     
     # Background is now ready - text will be rendered on top WITHOUT any blur
     return img
@@ -143,9 +139,11 @@ def render_replacement_text(
     Returns:
         Image with text rendered sharply
     """
-    result = image.copy()
+    # Track original mode
+    original_mode = image.mode
     
-    # Convert to RGBA for proper compositing
+    # Work in RGBA throughout
+    result = image.copy()
     if result.mode != 'RGBA':
         result = result.convert('RGBA')
     
@@ -166,18 +164,30 @@ def render_replacement_text(
         except:
             font = ImageFont.load_default()
     
+    # Clamp coordinates to image bounds
+    x = max(0, min(block.x, image.width - 1))
+    y = max(0, min(block.y, image.height - 1))
+    
     # Adjust size to fit width if needed
     bbox = draw.textbbox((0, 0), new_text, font=font)
     text_width = bbox[2] - bbox[0]
-    if text_width > block.width and font_size > 8:
-        scale = block.width / text_width
-        font_size = max(8, int(font_size * scale))
+    text_height = bbox[3] - bbox[1]
+    
+    # Ensure text fits within image bounds
+    text_right = x + text_width
+    text_bottom = y + text_height
+    
+    while (text_right > image.width or text_bottom > image.height) and font_size > 8:
+        font_size -= 1
         try:
             font = ImageFont.truetype(font_path, font_size)
         except:
-            pass
-    
-    x, y = block.x, block.y
+            font = ImageFont.load_default()
+        bbox = draw.textbbox((0, 0), new_text, font=font)
+        text_width = bbox[2] - bbox[0]
+        text_height = bbox[3] - bbox[1]
+        text_right = x + text_width
+        text_bottom = y + text_height
     
     # RENDER ORDER: shadow -> outline -> main text
     # Each layer at exact size, NO blur applied
@@ -198,15 +208,22 @@ def render_replacement_text(
                     continue
                 draw.text((x + dx, y + dy), new_text, font=font, fill=outline_color)
     
-    # 3. Main text - exact color, exact position
+    # 3. Main text - exact color with full alpha
     draw.text((x, y), new_text, font=font, fill=(*color, 255))
     
-    # 4. Composite text layer - NO blur, NO resize
-    result = Image.alpha_composite(result, text_layer)
+    # Verify overlay has non-transparent pixels
+    overlay_array = np.array(text_layer)
+    if overlay_array[:, :, 3].max() == 0:
+        # Fallback: direct draw on result
+        direct_draw = ImageDraw.Draw(result)
+        direct_draw.text((x, y), new_text, font=font, fill=(*color, 255))
+    else:
+        # Safe to composite
+        result = Image.alpha_composite(result, text_layer)
     
-    # Convert back to original mode
-    if image.mode == 'RGB':
-        result = result.convert('RGB')
+    # Convert back to original mode at the very end
+    if original_mode != 'RGBA':
+        result = result.convert(original_mode)
     
     return result
 
@@ -350,25 +367,12 @@ def extract_text_color(pil_image: Image.Image, block: TextBlock) -> tuple[int, i
 
 def calculate_font_size(block: TextBlock, pil_image: Image.Image) -> int:
     """
-    FIX 3: Calculate correct font size from bounding box.
-    Accounts for DPI scaling and line spacing padding.
+    Calculate correct font size from bounding box height.
+    Returns font size in points that will render at the detected height.
     """
-    bbox_height_px = block.height
-    
-    # Detect image DPI
-    dpi = 96  # default screen DPI
-    if hasattr(pil_image, 'info') and 'dpi' in pil_image.info:
-        try:
-            dpi = pil_image.info['dpi'][1]  # vertical DPI
-            dpi = max(72, min(300, int(dpi)))
-        except:
-            dpi = 96
-    
-    # Convert pixel height to font points
-    font_size_pt = int(bbox_height_px * 72 / dpi)
-    
-    # EasyOCR bbox includes ~20% line spacing padding
-    font_size_pt = int(font_size_pt * 0.80)
+    # Use the bounding box height directly as font size
+    # PIL font size roughly equals pixel height for most fonts
+    font_size_pt = block.height
     
     # Clamp to sane range
     font_size_pt = max(8, min(500, font_size_pt))

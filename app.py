@@ -100,7 +100,8 @@ class ImageEditorApp:
             'delete': self.delete_text_block,
             'delete_all': self.delete_all_text,
             'apply_filter': self.apply_filter_to_text,
-            'preview_filter': self.preview_filter_on_text
+            'preview_filter': self.preview_filter_on_text,
+            'force_refresh': self.force_canvas_refresh
         }
         self.text_panel = TextSelectPanel(sidebar_frame, text_callbacks)
         
@@ -413,6 +414,8 @@ class ImageEditorApp:
                 color  # None = use auto-detected properties
             )
             self.commit_change(img)
+            # Force immediate canvas update
+            self.root.update_idletasks()
         except Exception as e:
             raise e
     
@@ -431,6 +434,8 @@ class ImageEditorApp:
                     img = professional_replace_text(img, block, new_text, self.matched_font, color)
             
             self.commit_change(img)
+            # Force immediate canvas update
+            self.root.update_idletasks()
         except Exception as e:
             raise e
     
@@ -442,6 +447,8 @@ class ImageEditorApp:
         try:
             img = professional_delete_text(self.current_image, block)
             self.commit_change(img)
+            # Force immediate canvas update
+            self.root.update_idletasks()
         except Exception as e:
             raise e
     
@@ -467,6 +474,8 @@ class ImageEditorApp:
             from editor.text_editor import apply_filter_to_text_region
             img = apply_filter_to_text_region(self.current_image, block, filter_type, intensity)
             self.commit_change(img)
+            # Force immediate canvas update
+            self.root.update_idletasks()
         except Exception as e:
             raise e
     
@@ -491,6 +500,13 @@ class ImageEditorApp:
         self.sidebar.reset_adjustments()
         self.update_canvas()
         self.update_undo_redo_buttons()
+    
+    def force_canvas_refresh(self):
+        """Force immediate canvas refresh."""
+        if self.current_image:
+            self.canvas.update_images(self.original_image, self.current_image)
+            self.root.update_idletasks()
+            self.root.update()
     
     def undo(self):
         """Undo last change."""

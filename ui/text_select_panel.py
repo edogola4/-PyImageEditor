@@ -226,8 +226,13 @@ class TextSelectPanel:
             )
         else:
             for block in blocks:
+                # Truncate long text for display
+                display_text = block.text
+                if len(display_text) > 30:
+                    display_text = display_text[:27] + "..."
+                
                 conf_pct = int(block.conf * 100)
-                display = f"{block.block_id+1:2d} │ {block.text[:20]:20s} │ {conf_pct:3d}%"
+                display = f"{block.block_id+1:2d} │ {display_text:30s} │ {conf_pct:3d}%"
                 self.blocks_listbox.insert(tk.END, display)
             
             self.blocks_listbox.selection_set(0)
@@ -331,12 +336,38 @@ class TextSelectPanel:
                 return
         
         try:
+            # Store the index before replacement
+            selection = self.blocks_listbox.curselection()
+            if not selection:
+                return
+            idx = selection[0]
+            
             # Use custom color if set, otherwise None (will use auto-detected)
             color = self.custom_color if self.custom_color else None
             self.callbacks['replace'](self.selected_block, new_text, color)
             
-            # Refresh detection
-            self._detect_text()
+            # Force canvas refresh immediately
+            self.callbacks['force_refresh']()
+            
+            # Update the block text in memory
+            self.detected_blocks[idx].text = new_text
+            
+            # Update the listbox display immediately
+            conf_pct = int(self.detected_blocks[idx].conf * 100)
+            display = f"{self.detected_blocks[idx].block_id+1:2d} │ {new_text[:20]:20s} │ {conf_pct:3d}%"
+            self.blocks_listbox.delete(idx)
+            self.blocks_listbox.insert(idx, display)
+            self.blocks_listbox.selection_set(idx)
+            
+            # Update selected label
+            self.selected_label.config(
+                text=f'Selected: "{new_text}"',
+                foreground="black"
+            )
+            
+            # Clear replacement entry
+            self.replace_entry.delete(0, tk.END)
+            
         except Exception as e:
             messagebox.showerror("Replace Error", f"Failed to replace text:\n{str(e)}")
     
@@ -356,11 +387,33 @@ class TextSelectPanel:
             return
         
         try:
+            # Store the index before deletion
+            selection = self.blocks_listbox.curselection()
+            if not selection:
+                return
+            idx = selection[0]
+            
             # Call delete callback
             self.callbacks['delete'](self.selected_block)
             
-            # Refresh detection
-            self._detect_text()
+            # Force canvas refresh immediately
+            self.callbacks['force_refresh']()
+            
+            # Remove from detected blocks list
+            del self.detected_blocks[idx]
+            
+            # Remove from listbox
+            self.blocks_listbox.delete(idx)
+            
+            # Clear selection
+            self._clear_selection()
+            
+            # Select next item if available
+            if self.detected_blocks:
+                new_idx = min(idx, len(self.detected_blocks) - 1)
+                self.blocks_listbox.selection_set(new_idx)
+                self._on_block_select(None)
+            
         except Exception as e:
             messagebox.showerror("Delete Error", f"Failed to delete text:\n{str(e)}")
     
@@ -395,8 +448,31 @@ class TextSelectPanel:
             color = self.custom_color if self.custom_color else None
             self.callbacks['replace_all'](target_text, new_text, color)
             
-            # Refresh detection
-            self._detect_text()
+            # Force canvas refresh immediately
+            self.callbacks['force_refresh']()
+            
+            # Update all matching blocks in memory and listbox
+            for i, block in enumerate(self.detected_blocks):
+                if block.text.lower() == target_text.lower():
+                    block.text = new_text
+                    conf_pct = int(block.conf * 100)
+                    display = f"{block.block_id+1:2d} │ {new_text[:20]:20s} │ {conf_pct:3d}%"
+                    self.blocks_listbox.delete(i)
+                    self.blocks_listbox.insert(i, display)
+            
+            # Update selected label if current selection was replaced
+            if self.selected_block and self.selected_block.text.lower() == target_text.lower():
+                self.selected_block.text = new_text
+                self.selected_label.config(
+                    text=f'Selected: "{new_text}"',
+                    foreground="black"
+                )
+            
+            # Clear replacement entry
+            self.replace_entry.delete(0, tk.END)
+            
+            messagebox.showinfo("Success", f"Replaced {len(matching)} occurrence(s) of '{target_text}'.")
+            
         except Exception as e:
             messagebox.showerror("Replace Error", f"Failed to replace all:\n{str(e)}")
     
@@ -456,11 +532,14 @@ class TextSelectPanel:
             messagebox.showwarning("No Selection", "Please select a text block from the list first.")
             return
         
-        filter_type = self.filter_var.get()
+        filter_type = self.filter_var.get().lower()
         intensity = self.intensity_var.get()
         
         try:
             self.callbacks['apply_filter'](self.selected_block, filter_type, intensity)
+            
+            # Force canvas refresh immediately
+            self.callbacks['force_refresh']()
         except ValueError as e:
             messagebox.showerror("Filter Error", str(e))
         except Exception as e:

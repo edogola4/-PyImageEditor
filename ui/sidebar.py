@@ -7,6 +7,8 @@ from typing import Callable
 class Sidebar:
     """Sidebar with all editing controls."""
     
+    _filters_built = False
+    
     def __init__(self, parent, callbacks: dict):
         """Initialize sidebar with editing controls."""
         self.callbacks = callbacks
@@ -87,6 +89,9 @@ class Sidebar:
     
     def _create_filters(self):
         """Create filter buttons."""
+        if Sidebar._filters_built:
+            return
+        
         frame = ttk.LabelFrame(self.frame, text="Filters", padding=10)
         frame.pack(fill=tk.X, padx=5, pady=5)
         
@@ -94,6 +99,8 @@ class Sidebar:
         for f in filters:
             ttk.Button(frame, text=f, 
                       command=lambda filter_name=f: self.callbacks['filter'](filter_name)).pack(fill=tk.X, pady=2)
+        
+        Sidebar._filters_built = True
     
     def _create_shapes(self):
         """Create shape drawing controls."""
