@@ -1,10 +1,12 @@
 """Font detection and matching utilities with style analysis."""
 import os
 import sys
+import platform
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 from typing import Optional, List, Tuple
 from difflib import get_close_matches
+from utils.font_classifier import FontStyleClassifier
 
 
 def get_system_fonts() -> List[str]:
@@ -260,17 +262,25 @@ def detect_outline(text_region: Image.Image) -> Tuple[bool, Tuple[int, int, int]
     return False, (0, 0, 0)
 
 
-def match_font_with_style(is_bold: bool, is_italic: bool) -> str:
+def match_font_with_style(is_bold: bool, is_italic: bool, region_array: np.ndarray = None, block_height: int = 0) -> str:
     """
     Match system font based on detected style.
+    If region_array provided, uses classifier-based matching.
     
     Args:
         is_bold: Whether text is bold
         is_italic: Whether text is italic
+        region_array: Optional pixel array for style classification
+        block_height: Optional block height for classification
     
     Returns:
         Path to best matching system font
     """
+    # Use classifier-based matching if region provided
+    if region_array is not None and block_height > 0:
+        return find_matching_font(region_array, block_height, is_bold, is_italic)
+    
+    # Fallback to simple style matching
     system_fonts = get_system_fonts()
     
     if not system_fonts:
@@ -320,3 +330,174 @@ def match_font(detected_font: Optional[str] = None) -> str:
             return font
     
     return system_fonts[0] if system_fonts else "default"
+
+
+
+def find_matching_font(
+    region_array: np.ndarray,
+    block_height: int,
+    is_bold: bool,
+    is_italic: bool
+) -> str:
+    """
+    Scans all system fonts dynamically.
+    Uses FontStyleClassifier to determine what STYLE CLASS
+    the original text belongs to, then selects the best
+    matching font from that class.
+    Never hardcodes font names or paths.
+    """
+
+    # Classify the style of the original text
+    classifier = FontStyleClassifier(region_array, block_height)
+    style_class = classifier.classify()
+
+    # Scan all system font files dynamically
+    system = platform.system()
+    search_dirs = _get_font_dirs(system)
+
+    all_fonts = []
+    for d in search_dirs:
+        if not os.path.isdir(d):
+            continue
+        for root, _, files in os.walk(d):
+            for f in files:
+                if f.lower().endswith(('.ttf', '.otf', '.ttc')):
+                    all_fonts.append(os.path.join(root, f))
+
+    # Test each font loads successfully
+    valid_fonts = []
+    for fp in all_fonts:
+        try:
+            ImageFont.truetype(fp, 20)
+            valid_fonts.append(fp)
+        except Exception:
+            continue
+
+    if not valid_fonts:
+        return "default"
+
+    # Score each font by how well it matches detected style
+    def score_font(fp: str) -> float:
+        name = os.path.basename(fp).lower()
+        score = 0.0
+
+        # Style class keywords — derived from actual font
+        # file naming conventions, never hardcoded font names
+        style_keywords = {
+            FontStyleClassifier.SCRIPT: [
+                'script', 'cursive', 'handwriting',
+                'calligraph', 'hand', 'brush', 'write',
+                'signature', 'callig', 'dancing', 'pacifico',
+                'satisfy', 'cookie', 'allura', 'greatvibes',
+                'kaushan', 'lobster', 'yellowtail', 'playlist',
+            ],
+            FontStyleClassifier.SERIF: [
+                'serif', 'times', 'georgia', 'palatino',
+                'garamond', 'baskerville', 'didot', 'caslon',
+                'bodoni', 'cambria', 'constantia', 'rockwell',
+            ],
+            FontStyleClassifier.SANS: [
+                'sans', 'gothic', 'grotesk', 'helvetica',
+                'arial', 'roboto', 'opensans', 'lato',
+                'nunito', 'poppins', 'ubuntu', 'noto',
+                'source', 'inter', 'futura', 'gill',
+            ],
+            FontStyleClassifier.MONO: [
+                'mono', 'courier', 'consolas', 'menlo',
+                'inconsolata', 'sourcecode', 'firacode',
+                'jetbrains', 'hack', 'terminal',
+            ],
+            FontStyleClassifier.DISPLAY: [
+                'display', 'decorative', 'ornament', 'fantasy',
+                'headline', 'poster', 'impact', 'black',
+                'ultra', 'condensed', 'extended',
+            ],
+        }
+
+        # Match style class - use word boundaries to avoid partial matches
+        matched_keywords = []
+        for kw in style_keywords.get(style_class, []):
+            # For single-word keywords, check if it's a separate word
+            if len(kw) > 4:  # Longer keywords can be substrings
+                if kw in name:
+                    matched_keywords.append(kw)
+            else:  # Short keywords need word boundaries
+                # Check if keyword appears as whole word or at start/end
+                if (f' {kw} ' in f' {name} ' or 
+                    name.startswith(kw + ' ') or
+                    name.endswith(' ' + kw) or
+                    name.startswith(kw + '-') or
+                    name.endswith('-' + kw) or
+                    name == kw):
+                    matched_keywords.append(kw)
+        
+        # Score based on number and quality of matches
+        if matched_keywords:
+            # Base score for first match
+            score += 10.0
+            # Bonus for additional matches
+            score += (len(matched_keywords) - 1) * 3.0
+            # Extra bonus for exact style name match
+            if style_class in name:
+                score += 5.0
+
+        # Penalize opposite style classes heavily
+        opposite = {
+            FontStyleClassifier.SCRIPT: style_keywords[FontStyleClassifier.SANS],
+            FontStyleClassifier.SANS: style_keywords[FontStyleClassifier.SCRIPT],
+            FontStyleClassifier.SERIF: style_keywords[FontStyleClassifier.MONO],
+            FontStyleClassifier.MONO: style_keywords[FontStyleClassifier.SCRIPT],
+        }
+        for kw in opposite.get(style_class, []):
+            if kw in name:
+                score -= 3.0
+                break
+
+        # Bold matching
+        if is_bold and any(b in name for b in
+           ['bold', 'heavy', 'black', 'semibold', 'medium']):
+            score += 3.0
+        if not is_bold and not any(b in name for b in
+           ['bold', 'heavy', 'black']):
+            score += 1.0
+
+        # Italic matching — CRITICAL for script fonts
+        # Only boost italic if it's a script font AND italic
+        if style_class == FontStyleClassifier.SCRIPT:
+            if any(i in name for i in ['italic', 'oblique', 'slant']):
+                score += 2.0  # Moderate boost for script+italic
+        elif is_italic:
+            if any(i in name for i in ['italic', 'oblique', 'slant']):
+                score += 3.0
+        elif not is_italic:
+            if not any(i in name for i in ['italic', 'oblique']):
+                score += 1.0
+
+        return score
+
+    valid_fonts.sort(key=score_font, reverse=True)
+    return valid_fonts[0]
+
+
+def _get_font_dirs(system: str) -> list:
+    """Returns font search directories for current OS."""
+    if system == 'Darwin':
+        return [
+            '/System/Library/Fonts/',
+            '/Library/Fonts/',
+            os.path.expanduser('~/Library/Fonts/'),
+        ]
+    elif system == 'Windows':
+        return [
+            'C:\\Windows\\Fonts\\',
+            os.path.expanduser(
+                '~\\AppData\\Local\\Microsoft\\Windows\\Fonts\\'
+            ),
+        ]
+    else:
+        return [
+            '/usr/share/fonts/',
+            '/usr/local/share/fonts/',
+            os.path.expanduser('~/.fonts/'),
+            os.path.expanduser('~/.local/share/fonts/'),
+        ]

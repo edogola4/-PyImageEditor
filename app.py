@@ -405,13 +405,14 @@ class ImageEditorApp:
             return
         
         try:
-            # Pass color as None if not manually set (will use auto-detected)
+            # CRITICAL: Pass None for font_path to use classifier-based auto-detection
+            # Only pass color if manually set, otherwise None = auto-detect
             img = professional_replace_text(
                 self.current_image,
                 block,
                 new_text,
-                self.matched_font,
-                color  # None = use auto-detected properties
+                font_path=None,  # Let classifier detect font style
+                color=color  # None = use auto-detected properties
             )
             self.commit_change(img)
             # Force immediate canvas update
@@ -430,8 +431,12 @@ class ImageEditorApp:
             
             for block in blocks:
                 if block.text.lower() == target_text.lower():
-                    # Pass color as None if not manually set (will use auto-detected)
-                    img = professional_replace_text(img, block, new_text, self.matched_font, color)
+                    # CRITICAL: Pass None for font_path to use classifier-based auto-detection
+                    img = professional_replace_text(
+                        img, block, new_text,
+                        font_path=None,  # Let classifier detect font style
+                        color=color
+                    )
             
             self.commit_change(img)
             # Force immediate canvas update

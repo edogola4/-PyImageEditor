@@ -479,8 +479,12 @@ def extract_text_properties(pil_image: Image.Image, block: TextBlock) -> dict:
         outline_color = (0, 0, 0)
         outline_width = 0
     
-    # Match font based on detected style
-    best_font_path = match_font_with_style(is_bold, is_italic)
+    # Match font based on detected style using classifier
+    best_font_path = match_font_with_style(
+        is_bold, is_italic,
+        region_array=np_region,
+        block_height=block.height
+    )
     
     return {
         'color': text_color,
