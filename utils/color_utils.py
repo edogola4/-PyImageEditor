@@ -80,3 +80,17 @@ def sanitize_color_with_alpha(
     rgb = sanitize_color(color, fallback=(0, 0, 0))
     a = max(0, min(255, int(alpha)))
     return (rgb[0], rgb[1], rgb[2], a)
+
+
+def rgb_to_hex(rgb: tuple) -> str:
+    """
+    Convert RGB tuple to hex color string.
+    
+    Args:
+        rgb: RGB tuple (r, g, b)
+    
+    Returns:
+        Hex color string like '#FF0000'
+    """
+    rgb = sanitize_color(rgb, fallback=(0, 0, 0))
+    return f"#{rgb[0]:02X}{rgb[1]:02X}{rgb[2]:02X}"

@@ -152,6 +152,25 @@ def test_exception_safety():
     print("✓ Exception safety verified")
 
 
+
+
+def test_rgb_to_hex():
+    """Test RGB to hex conversion."""
+    from utils.color_utils import rgb_to_hex
+    
+    assert rgb_to_hex((255, 0, 0)) == "#FF0000", "Red conversion failed"
+    assert rgb_to_hex((0, 255, 0)) == "#00FF00", "Green conversion failed"
+    assert rgb_to_hex((0, 0, 255)) == "#0000FF", "Blue conversion failed"
+    assert rgb_to_hex((255, 255, 255)) == "#FFFFFF", "White conversion failed"
+    assert rgb_to_hex((0, 0, 0)) == "#000000", "Black conversion failed"
+    
+    # Test with numpy array
+    import numpy as np
+    assert rgb_to_hex(np.array([128, 64, 32])) == "#804020", "Numpy array conversion failed"
+    
+    print("✓ RGB to hex conversion handled")
+
+
 if __name__ == "__main__":
     print("Testing color sanitization utility...\n")
     
@@ -171,6 +190,7 @@ if __name__ == "__main__":
     test_with_alpha()
     test_median_output()
     test_exception_safety()
+    test_rgb_to_hex()
     
     print("\n✅ All color sanitization tests passed!")
     print("\nThe fix ensures:")
@@ -179,3 +199,4 @@ if __name__ == "__main__":
     print("  • Invalid inputs never crash PIL")
     print("  • Colors are always 3 elements (RGB) or 4 (RGBA)")
     print("  • Values are clamped to 0-255 range")
+    print("  • RGB to hex conversion works correctly")
