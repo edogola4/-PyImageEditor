@@ -172,10 +172,27 @@ def render_replacement_text(
     x = max(0, min(block.x, image.width - 1))
     y = max(0, min(block.y, image.height - 1))
     
-    # Adjust size to fit width if needed
+    # Measure the replacement text with the initial font size
     bbox = draw.textbbox((0, 0), new_text, font=font)
     text_width = bbox[2] - bbox[0]
     text_height = bbox[3] - bbox[1]
+    
+    # If replacement text is wider than original, scale down font to fit
+    if text_width > block.width:
+        # Calculate scale factor needed
+        scale_factor = block.width / text_width
+        font_size = int(font_size * scale_factor * 0.95)  # 0.95 for safety margin
+        font_size = max(8, font_size)
+        
+        try:
+            font = ImageFont.truetype(font_path, font_size)
+        except:
+            font = ImageFont.load_default()
+        
+        # Re-measure
+        bbox = draw.textbbox((0, 0), new_text, font=font)
+        text_width = bbox[2] - bbox[0]
+        text_height = bbox[3] - bbox[1]
     
     # Ensure text fits within image bounds
     text_right = x + text_width
@@ -258,7 +275,8 @@ def replace_text_in_image(
     """
     # CRITICAL: Extract ALL properties from ORIGINAL image BEFORE erasing
     properties = extract_text_properties(pil_image, block)
-    properties['font_size'] = calculate_font_size(block, pil_image)
+    # Calculate font size AFTER getting font path so we can measure with the actual font
+    properties['font_size'] = calculate_font_size(block, pil_image, properties['best_font_path'], block.text)
     properties['color'] = extract_text_color(pil_image, block)
     
     # Override with user-provided values if specified
@@ -372,19 +390,76 @@ def extract_text_color(pil_image: Image.Image, block: TextBlock) -> tuple[int, i
     return sanitize_color(median_color, fallback=(0, 0, 0))
 
 
-def calculate_font_size(block: TextBlock, pil_image: Image.Image) -> int:
+def calculate_font_size(block: TextBlock, pil_image: Image.Image, font_path: str = None, sample_text: str = None) -> int:
     """
-    Calculate correct font size from bounding box height.
-    Returns font size in points that will render at the detected height.
+    Calculate correct font size that will fit in the bounding box.
+    Uses binary search to find the font size that renders at the detected height.
+    
+    Args:
+        block: Text block with dimensions
+        pil_image: Source image
+        font_path: Path to font file to use for measurement
+        sample_text: Sample text to measure (defaults to block.text)
+    
+    Returns:
+        Font size in points that will render at the detected height
     """
-    # Use the bounding box height directly as font size
-    # PIL font size roughly equals pixel height for most fonts
-    font_size_pt = block.height
+    if sample_text is None:
+        sample_text = block.text if hasattr(block, 'text') else "Ag"
+    
+    target_height = block.height
+    target_width = block.width
+    
+    # If no font path provided, use a default
+    if not font_path or font_path == "default":
+        font_path = match_font_with_style(False, False)
+    
+    # Binary search for the right font size
+    min_size = 8
+    max_size = 500
+    best_size = target_height
+    
+    # Try to load the font
+    try:
+        test_font = ImageFont.truetype(font_path, target_height)
+    except:
+        # If font fails to load, fall back to simple calculation
+        return max(8, min(500, target_height))
+    
+    # Create a temporary draw context for measurement
+    temp_img = Image.new('RGB', (1, 1))
+    draw = ImageDraw.Draw(temp_img)
+    
+    # Binary search for optimal size
+    for _ in range(15):  # Max 15 iterations
+        mid_size = (min_size + max_size) // 2
+        
+        try:
+            font = ImageFont.truetype(font_path, mid_size)
+            bbox = draw.textbbox((0, 0), sample_text, font=font)
+            rendered_height = bbox[3] - bbox[1]
+            rendered_width = bbox[2] - bbox[0]
+            
+            # Check if this size fits
+            if rendered_height < target_height * 0.95:
+                # Too small, increase
+                min_size = mid_size + 1
+                best_size = mid_size
+            elif rendered_height > target_height * 1.05:
+                # Too large, decrease
+                max_size = mid_size - 1
+            else:
+                # Good fit!
+                best_size = mid_size
+                break
+        except:
+            # If font loading fails at this size, try smaller
+            max_size = mid_size - 1
     
     # Clamp to sane range
-    font_size_pt = max(8, min(500, font_size_pt))
+    best_size = max(8, min(500, best_size))
     
-    return font_size_pt
+    return best_size
 
 
 def extract_text_properties(pil_image: Image.Image, block: TextBlock) -> dict:
@@ -554,7 +629,8 @@ def replace_all_matching(
     
     for block in matching_blocks:
         props = extract_text_properties(pil_image, block)
-        props['font_size'] = calculate_font_size(block, pil_image)
+        # Calculate font size with the actual font path
+        props['font_size'] = calculate_font_size(block, pil_image, props['best_font_path'], block.text)
         props['color'] = extract_text_color(pil_image, block)
         if font_path and font_path != 'default':
             props['best_font_path'] = font_path
