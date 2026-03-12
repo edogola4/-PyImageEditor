@@ -64,6 +64,7 @@ def detect_all_text(pil_image: Image.Image) -> list[TextBlock]:
 def erase_text_region(pil_image: Image.Image, block: TextBlock, padding: int = 6) -> Image.Image:
     """
     Erase text region with smart background inpainting.
+    CRITICAL: Blur is applied ONLY to background, NEVER after text is rendered.
     
     Args:
         pil_image: Source image
@@ -71,7 +72,7 @@ def erase_text_region(pil_image: Image.Image, block: TextBlock, padding: int = 6
         padding: Extra pixels around bounding box
     
     Returns:
-        Image with text region erased
+        Image with text region erased and background reconstructed
     """
     img = pil_image.copy()
     draw = ImageDraw.Draw(img)
@@ -108,11 +109,18 @@ def erase_text_region(pil_image: Image.Image, block: TextBlock, padding: int = 6
     # Fill region with background color
     draw.rectangle([x1, y1, x2, y2], fill=bg_color)
     
-    # Apply slight blur to soften edges
-    region = img.crop((x1, y1, x2, y2))
-    region = region.filter(ImageFilter.GaussianBlur(radius=1))
-    img.paste(region, (x1, y1))
+    # FIX 1: Blur ONLY the inpainted background region edges (feather blend)
+    # Crop slightly larger region for edge blending
+    blur_x1 = max(0, x1 - 2)
+    blur_y1 = max(0, y1 - 2)
+    blur_x2 = min(img.width, x2 + 2)
+    blur_y2 = min(img.height, y2 + 2)
     
+    region = img.crop((blur_x1, blur_y1, blur_x2, blur_y2))
+    region = region.filter(ImageFilter.GaussianBlur(radius=0.8))
+    img.paste(region, (blur_x1, blur_y1))
+    
+    # Background is now ready - text will be rendered on top WITHOUT any blur
     return img
 
 
@@ -120,51 +128,87 @@ def render_replacement_text(
     image: Image.Image,
     block: TextBlock,
     new_text: str,
-    font_path: str,
-    font_size: int,
-    color: tuple[int, int, int]
+    properties: dict
 ) -> Image.Image:
     """
-    Render replacement text at block position.
+    FIX 4: Render text at EXACT size with NO downscaling blur.
+    Renders directly at final pixel size in single pass.
     
     Args:
-        image: Image to draw on
+        image: Image to draw on (with background already erased)
         block: Original text block
         new_text: Replacement text
-        font_path: Path to font file
-        font_size: Initial font size
-        color: RGB color tuple
+        properties: Dict with font_path, font_size, color, shadow, outline
     
     Returns:
-        Image with text rendered
+        Image with text rendered sharply
     """
-    img = image.copy()
-    draw = ImageDraw.Draw(img)
+    result = image.copy()
     
-    # Load font and adjust size to fit
-    current_size = font_size
-    while current_size >= 8:
+    # Convert to RGBA for proper compositing
+    if result.mode != 'RGBA':
+        result = result.convert('RGBA')
+    
+    # Create transparent text layer
+    text_layer = Image.new('RGBA', result.size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(text_layer)
+    
+    font_path = properties['best_font_path']
+    font_size = properties['font_size']
+    color = properties['color']
+    
+    # Load font at EXACT target size - no scaling
+    try:
+        font = ImageFont.truetype(font_path, font_size)
+    except:
         try:
-            font = ImageFont.truetype(font_path, current_size)
-            bbox = draw.textbbox((0, 0), new_text, font=font)
-            text_width = bbox[2] - bbox[0]
-            
-            if text_width <= block.width:
-                break
-            current_size -= 1
+            font = ImageFont.truetype(match_font_with_style(False, False), font_size)
         except:
             font = ImageFont.load_default()
-            break
-    else:
+    
+    # Adjust size to fit width if needed
+    bbox = draw.textbbox((0, 0), new_text, font=font)
+    text_width = bbox[2] - bbox[0]
+    if text_width > block.width and font_size > 8:
+        scale = block.width / text_width
+        font_size = max(8, int(font_size * scale))
         try:
-            font = ImageFont.truetype(font_path, 8)
+            font = ImageFont.truetype(font_path, font_size)
         except:
-            font = ImageFont.load_default()
+            pass
     
-    # Draw text at block position
-    draw.text((block.x, block.y), new_text, fill=color, font=font)
+    x, y = block.x, block.y
     
-    return img
+    # RENDER ORDER: shadow -> outline -> main text
+    # Each layer at exact size, NO blur applied
+    
+    # 1. Drop shadow (if detected)
+    if properties.get('has_shadow'):
+        sx = x + properties['shadow_offset'][0]
+        sy = y + properties['shadow_offset'][1]
+        draw.text((sx, sy), new_text, font=font, fill=properties['shadow_color'])
+    
+    # 2. Outline (if detected)
+    if properties.get('has_outline'):
+        ow = properties.get('outline_width', 1)
+        outline_color = properties['outline_color']
+        for dx in range(-ow, ow + 1):
+            for dy in range(-ow, ow + 1):
+                if dx == 0 and dy == 0:
+                    continue
+                draw.text((x + dx, y + dy), new_text, font=font, fill=outline_color)
+    
+    # 3. Main text - exact color, exact position
+    draw.text((x, y), new_text, font=font, fill=(*color, 255))
+    
+    # 4. Composite text layer - NO blur, NO resize
+    result = Image.alpha_composite(result, text_layer)
+    
+    # Convert back to original mode
+    if image.mode == 'RGB':
+        result = result.convert('RGB')
+    
+    return result
 
 
 def replace_text_in_image(
@@ -176,19 +220,35 @@ def replace_text_in_image(
 ) -> Image.Image:
     """
     Replace text block with new text.
+    FIX 6: Extract properties BEFORE erasing.
     
     Args:
         pil_image: Source image
         block: Text block to replace
         new_text: Replacement text
-        font_path: Path to font file
-        color: RGB color tuple
+        font_path: Path to font file (can be overridden by auto-detect)
+        color: RGB color tuple (can be overridden by auto-detect)
     
     Returns:
         Image with text replaced
     """
+    # CRITICAL: Extract ALL properties from ORIGINAL image BEFORE erasing
+    properties = extract_text_properties(pil_image, block)
+    properties['font_size'] = calculate_font_size(block, pil_image)
+    properties['color'] = extract_text_color(pil_image, block)
+    
+    # Override with user-provided values if specified
+    if font_path and font_path != 'default':
+        properties['best_font_path'] = font_path
+    if color != (0, 0, 0):  # If user specified a color
+        properties['color'] = color
+    
+    # Step 1: Erase original text (background reconstruction only)
     img = erase_text_region(pil_image, block)
-    img = render_replacement_text(img, block, new_text, font_path, block.font_size_estimate, color)
+    
+    # Step 2: Render new text on top (NO blur applied after this)
+    img = render_replacement_text(img, block, new_text, properties)
+    
     return img
 
 
@@ -233,6 +293,89 @@ def delete_multiple_regions(
     return img
 
 
+def extract_text_color(pil_image: Image.Image, block: TextBlock) -> tuple[int, int, int]:
+    """
+    FIX 2: Adaptive color detection that works on both light and dark backgrounds.
+    Uses corner sampling to determine background luminance.
+    """
+    # Crop exact bounding box
+    x1, y1 = max(0, block.x), max(0, block.y)
+    x2 = min(pil_image.width, block.x + block.width)
+    y2 = min(pil_image.height, block.y + block.height)
+    
+    if x2 <= x1 or y2 <= y1:
+        return (0, 0, 0)
+    
+    crop = pil_image.crop((x1, y1, x2, y2))
+    img_array = np.array(crop.convert('RGB'))
+    
+    if img_array.size == 0:
+        return (0, 0, 0)
+    
+    gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
+    
+    # Sample background from corners (4 corner pixels)
+    h, w = gray.shape
+    corners = [
+        img_array[0, 0],
+        img_array[0, min(w-1, w-1)],
+        img_array[min(h-1, h-1), 0],
+        img_array[min(h-1, h-1), min(w-1, w-1)]
+    ]
+    bg_color = np.mean(corners, axis=0).astype(int)
+    bg_luminance = 0.299 * bg_color[0] + 0.587 * bg_color[1] + 0.114 * bg_color[2]
+    
+    # Adaptive thresholding based on background luminance
+    if bg_luminance < 128:
+        # Dark background: text is LIGHT (brighter than bg)
+        _, mask = cv2.threshold(gray, int(bg_luminance + 30), 255, cv2.THRESH_BINARY)
+    else:
+        # Light background: text is DARK (darker than bg)
+        _, mask = cv2.threshold(gray, int(bg_luminance - 30), 255, cv2.THRESH_BINARY_INV)
+    
+    # Extract text pixels
+    text_pixels = img_array[mask == 255]
+    
+    if len(text_pixels) == 0:
+        # Fallback: contrasting color
+        if bg_luminance > 128:
+            return (0, 0, 0)  # black on light
+        else:
+            return (255, 255, 255)  # white on dark
+    
+    # Return median color of text pixels
+    median_color = np.median(text_pixels, axis=0)
+    return (int(median_color[0]), int(median_color[1]), int(median_color[2]))
+
+
+def calculate_font_size(block: TextBlock, pil_image: Image.Image) -> int:
+    """
+    FIX 3: Calculate correct font size from bounding box.
+    Accounts for DPI scaling and line spacing padding.
+    """
+    bbox_height_px = block.height
+    
+    # Detect image DPI
+    dpi = 96  # default screen DPI
+    if hasattr(pil_image, 'info') and 'dpi' in pil_image.info:
+        try:
+            dpi = pil_image.info['dpi'][1]  # vertical DPI
+            dpi = max(72, min(300, int(dpi)))
+        except:
+            dpi = 96
+    
+    # Convert pixel height to font points
+    font_size_pt = int(bbox_height_px * 72 / dpi)
+    
+    # EasyOCR bbox includes ~20% line spacing padding
+    font_size_pt = int(font_size_pt * 0.80)
+    
+    # Clamp to sane range
+    font_size_pt = max(8, min(500, font_size_pt))
+    
+    return font_size_pt
+
+
 def extract_text_properties(pil_image: Image.Image, block: TextBlock) -> dict:
     """
     Extract ALL text properties from original text block.
@@ -252,12 +395,13 @@ def extract_text_properties(pil_image: Image.Image, block: TextBlock) -> dict:
     
     # Convert to grayscale for binary mask
     gray = cv2.cvtColor(np_region, cv2.COLOR_RGB2GRAY)
-    _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
     
-    # Determine if text is dark or light
-    text_is_dark = np.mean(gray) > 127
-    if text_is_dark:
-        binary = cv2.bitwise_not(binary)
+    # Use adaptive thresholding
+    bg_luminance = np.mean(gray)
+    if bg_luminance < 128:
+        _, binary = cv2.threshold(gray, int(bg_luminance + 30), 255, cv2.THRESH_BINARY)
+    else:
+        _, binary = cv2.threshold(gray, int(bg_luminance - 30), 255, cv2.THRESH_BINARY_INV)
     
     # Extract text and background pixels
     text_mask = binary == 255
@@ -348,7 +492,7 @@ def extract_text_properties(pil_image: Image.Image, block: TextBlock) -> dict:
 def detect_text_color(pil_image: Image.Image, block: TextBlock) -> tuple[int, int, int]:
     """
     Auto-detect text color from block region.
-    This is a simplified version that calls extract_text_properties.
+    Wrapper for extract_text_color.
     
     Args:
         pil_image: Source image
@@ -358,8 +502,7 @@ def detect_text_color(pil_image: Image.Image, block: TextBlock) -> tuple[int, in
         RGB color tuple
     """
     try:
-        props = extract_text_properties(pil_image, block)
-        return props['color']
+        return extract_text_color(pil_image, block)
     except:
         return (0, 0, 0)
 
@@ -374,6 +517,7 @@ def replace_all_matching(
 ) -> Image.Image:
     """
     Replace all blocks matching target text.
+    Each block's properties are extracted from ORIGINAL image before any edits.
     
     Args:
         pil_image: Source image
@@ -389,8 +533,90 @@ def replace_all_matching(
     img = pil_image.copy()
     target_lower = target_text.lower()
     
-    for block in blocks:
-        if block.text.lower() == target_lower:
-            img = replace_text_in_image(img, block, new_text, font_path, color)
+    # Extract properties for all matching blocks FIRST (from original image)
+    matching_blocks = [b for b in blocks if b.text.lower() == target_lower]
+    all_properties = []
+    
+    for block in matching_blocks:
+        props = extract_text_properties(pil_image, block)
+        props['font_size'] = calculate_font_size(block, pil_image)
+        props['color'] = extract_text_color(pil_image, block)
+        if font_path and font_path != 'default':
+            props['best_font_path'] = font_path
+        if color != (0, 0, 0):
+            props['color'] = color
+        all_properties.append(props)
+    
+    # Now erase and render each block
+    for block, props in zip(matching_blocks, all_properties):
+        img = erase_text_region(img, block)
+        img = render_replacement_text(img, block, new_text, props)
     
     return img
+
+
+def apply_filter_to_text_region(
+    pil_image: Image.Image,
+    block: TextBlock,
+    filter_type: str,
+    intensity: float = 1.0
+) -> Image.Image:
+    """
+    Apply filter ONLY to text block region, leaving rest of image untouched.
+    
+    STRICT ISOLATION RULES:
+    - Only pixels inside bbox are modified
+    - Filter receives only cropped region, never full image
+    - Original image is never mutated
+    
+    Args:
+        pil_image: Source image
+        block: Text block defining region to filter
+        filter_type: Filter name (grayscale, sepia, blur, etc.)
+        intensity: Filter intensity (0.0 to 2.0)
+    
+    Returns:
+        Image with filter applied only to text region
+    """
+    from editor.filters import apply_named_filter
+    
+    # RULE 5: Never mutate original
+    result = pil_image.copy()
+    
+    # RULE 4: Clamp bbox to image bounds
+    x1 = max(0, block.x)
+    y1 = max(0, block.y)
+    x2 = min(pil_image.width, block.x + block.width)
+    y2 = min(pil_image.height, block.y + block.height)
+    
+    # Edge case: region too small
+    if (x2 - x1) < 5 or (y2 - y1) < 5:
+        raise ValueError("Region too small to filter")
+    
+    bbox = (x1, y1, x2, y2)
+    
+    # RULE 3: Filter receives only cropped region
+    region = result.crop(bbox)
+    
+    # Handle different image modes
+    original_mode = region.mode
+    if original_mode == 'RGBA':
+        alpha = region.split()[3]
+        region = region.convert('RGB')
+    elif original_mode == 'L':
+        region = region.convert('RGB')
+    
+    # Apply filter to region only
+    filtered_region = apply_named_filter(region, filter_type, intensity)
+    
+    # Restore original mode
+    if original_mode == 'RGBA':
+        filtered_region = filtered_region.convert('RGBA')
+        filtered_region.putalpha(alpha)
+    elif original_mode == 'L':
+        filtered_region = filtered_region.convert('L')
+    
+    # RULE 2: Paste is the ONLY way filtered pixels re-enter
+    result.paste(filtered_region, bbox)
+    
+    return result

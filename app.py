@@ -98,7 +98,9 @@ class ImageEditorApp:
             'replace': self.replace_text_block,
             'replace_all': self.replace_all_text,
             'delete': self.delete_text_block,
-            'delete_all': self.delete_all_text
+            'delete_all': self.delete_all_text,
+            'apply_filter': self.apply_filter_to_text,
+            'preview_filter': self.preview_filter_on_text
         }
         self.text_panel = TextSelectPanel(sidebar_frame, text_callbacks)
         
@@ -453,6 +455,31 @@ class ImageEditorApp:
             for block in blocks:
                 img = professional_delete_text(img, block)
             self.commit_change(img)
+        except Exception as e:
+            raise e
+    
+    def apply_filter_to_text(self, block, filter_type: str, intensity: float):
+        """Apply filter to selected text region only."""
+        if self.current_image is None:
+            return
+        
+        try:
+            from editor.text_editor import apply_filter_to_text_region
+            img = apply_filter_to_text_region(self.current_image, block, filter_type, intensity)
+            self.commit_change(img)
+        except Exception as e:
+            raise e
+    
+    def preview_filter_on_text(self, block, filter_type: str, intensity: float):
+        """Preview filter on selected text region without committing."""
+        if self.current_image is None:
+            return
+        
+        try:
+            from editor.text_editor import apply_filter_to_text_region
+            img = apply_filter_to_text_region(self.current_image, block, filter_type, intensity)
+            # Update canvas without committing to history
+            self.canvas.update_images(self.original_image, img)
         except Exception as e:
             raise e
     

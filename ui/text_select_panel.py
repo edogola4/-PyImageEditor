@@ -116,7 +116,7 @@ class TextSelectPanel:
         self.delete_btn.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(2, 0))
         
         btn_frame2 = tk.Frame(self.frame)
-        btn_frame2.pack(fill=tk.X)
+        btn_frame2.pack(fill=tk.X, pady=(0, 10))
         
         self.replace_all_btn = ttk.Button(
             btn_frame2,
@@ -131,6 +131,73 @@ class TextSelectPanel:
             command=self._delete_all
         )
         self.delete_all_btn.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(2, 0))
+        
+        # Filter section
+        filter_section = ttk.LabelFrame(self.frame, text="🎨 Filter Selected Text Region", padding=8)
+        filter_section.pack(fill=tk.X, pady=(10, 0))
+        
+        # Filter dropdown
+        ttk.Label(filter_section, text="Filter:").pack(anchor=tk.W)
+        self.filter_var = tk.StringVar(value="Grayscale")
+        self.filter_combo = ttk.Combobox(
+            filter_section,
+            textvariable=self.filter_var,
+            state="readonly",
+            values=[
+                "Grayscale", "Sepia", "Blur", "Sharpen",
+                "Brightness", "Contrast", "Saturation",
+                "Edge Detection", "Emboss", "Invert",
+                "Pixelate", "Highlight", "Redact", "White Redact"
+            ]
+        )
+        self.filter_combo.pack(fill=tk.X, pady=(2, 10))
+        self.filter_combo.bind('<<ComboboxSelected>>', self._on_filter_change)
+        
+        # Intensity slider
+        intensity_frame = tk.Frame(filter_section)
+        intensity_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        self.intensity_label = ttk.Label(intensity_frame, text="Intensity:")
+        self.intensity_label.pack(anchor=tk.W)
+        
+        slider_frame = tk.Frame(intensity_frame)
+        slider_frame.pack(fill=tk.X)
+        
+        self.intensity_var = tk.DoubleVar(value=1.0)
+        self.intensity_slider = ttk.Scale(
+            slider_frame,
+            from_=0.0,
+            to=2.0,
+            variable=self.intensity_var,
+            orient=tk.HORIZONTAL
+        )
+        self.intensity_slider.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        
+        self.intensity_value_label = ttk.Label(slider_frame, text="1.00", width=5)
+        self.intensity_value_label.pack(side=tk.LEFT, padx=(5, 0))
+        
+        self.intensity_var.trace_add('write', self._update_intensity_label)
+        
+        # Filter buttons
+        filter_btn_frame = tk.Frame(filter_section)
+        filter_btn_frame.pack(fill=tk.X)
+        
+        self.apply_filter_btn = ttk.Button(
+            filter_btn_frame,
+            text="✅ Apply Filter",
+            command=self._apply_filter
+        )
+        self.apply_filter_btn.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 2))
+        
+        self.preview_filter_btn = ttk.Button(
+            filter_btn_frame,
+            text="👁 Preview",
+            command=self._preview_filter
+        )
+        self.preview_filter_btn.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(2, 0))
+        
+        # Update intensity visibility
+        self._on_filter_change(None)
     
     def _detect_text(self):
         """Detect text blocks in image."""
@@ -362,6 +429,59 @@ class TextSelectPanel:
         except Exception as e:
             messagebox.showerror("Delete Error", f"Failed to delete all text:\n{str(e)}")
     
+    def _on_filter_change(self, event):
+        """Handle filter selection change."""
+        filter_type = self.filter_var.get().lower()
+        
+        # Filters that use intensity
+        intensity_filters = ['blur', 'sharpen', 'brightness', 'contrast', 'saturation', 'pixelate']
+        
+        if filter_type in intensity_filters:
+            self.intensity_label.pack(anchor=tk.W)
+            self.intensity_slider.config(state=tk.NORMAL)
+            self.intensity_value_label.config(foreground='black')
+        else:
+            self.intensity_label.pack_forget()
+            self.intensity_slider.config(state=tk.DISABLED)
+            self.intensity_value_label.config(foreground='gray')
+    
+    def _update_intensity_label(self, *args):
+        """Update intensity value label."""
+        value = self.intensity_var.get()
+        self.intensity_value_label.config(text=f"{value:.2f}")
+    
+    def _apply_filter(self):
+        """Apply filter to selected text region."""
+        if not self.selected_block:
+            messagebox.showwarning("No Selection", "Please select a text block from the list first.")
+            return
+        
+        filter_type = self.filter_var.get()
+        intensity = self.intensity_var.get()
+        
+        try:
+            self.callbacks['apply_filter'](self.selected_block, filter_type, intensity)
+        except ValueError as e:
+            messagebox.showerror("Filter Error", str(e))
+        except Exception as e:
+            messagebox.showerror("Filter Error", f"Failed to apply filter:\n{str(e)}")
+    
+    def _preview_filter(self):
+        """Preview filter on selected text region."""
+        if not self.selected_block:
+            messagebox.showwarning("No Selection", "Please select a text block from the list first.")
+            return
+        
+        filter_type = self.filter_var.get()
+        intensity = self.intensity_var.get()
+        
+        try:
+            self.callbacks['preview_filter'](self.selected_block, filter_type, intensity)
+        except ValueError as e:
+            messagebox.showerror("Filter Error", str(e))
+        except Exception as e:
+            messagebox.showerror("Filter Error", f"Failed to preview filter:\n{str(e)}")
+    
     def enable(self):
         """Enable all controls."""
         self.detect_btn.config(state=tk.NORMAL)
@@ -373,6 +493,9 @@ class TextSelectPanel:
         self.delete_btn.config(state=tk.NORMAL)
         self.replace_all_btn.config(state=tk.NORMAL)
         self.delete_all_btn.config(state=tk.NORMAL)
+        self.filter_combo.config(state="readonly")
+        self.apply_filter_btn.config(state=tk.NORMAL)
+        self.preview_filter_btn.config(state=tk.NORMAL)
     
     def disable(self):
         """Disable all controls."""
@@ -385,3 +508,6 @@ class TextSelectPanel:
         self.delete_btn.config(state=tk.DISABLED)
         self.replace_all_btn.config(state=tk.DISABLED)
         self.delete_all_btn.config(state=tk.DISABLED)
+        self.filter_combo.config(state=tk.DISABLED)
+        self.apply_filter_btn.config(state=tk.DISABLED)
+        self.preview_filter_btn.config(state=tk.DISABLED)
