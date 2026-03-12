@@ -60,7 +60,7 @@ def analyze_background_type(pil_image: Image.Image, block) -> dict:
     }
 
 
-def inpaint_solid_background(pil_image: Image.Image, block, bg_info: dict) -> Image.Image:
+def inpaint_solid_background(pil_image: Image.Image, block, bg_info: dict, all_blocks: list = None) -> Image.Image:
     """Inpaint solid color background with NO blur."""
     img = pil_image.copy()
     
@@ -69,10 +69,34 @@ def inpaint_solid_background(pil_image: Image.Image, block, bg_info: dict) -> Im
     median_color = sanitize_color(median_color, fallback=(255, 255, 255))
     
     # Fill exact region with median color - NO padding, NO blur
-    x1 = max(0, block.x)
-    y1 = max(0, block.y)
-    x2 = min(img.width, block.x + block.width)
-    y2 = min(img.height, block.y + block.height)
+    # Use minimal padding and check for collisions
+    padding = 2
+    x1 = max(0, block.x - padding)
+    y1 = max(0, block.y - padding)
+    x2 = min(img.width, block.x + block.width + padding)
+    y2 = min(img.height, block.y + block.height + padding)
+    
+    # Check for collisions with other blocks
+    if all_blocks:
+        for other_block in all_blocks:
+            if other_block.block_id == block.block_id:
+                continue
+            
+            other_x1 = other_block.x
+            other_y1 = other_block.y
+            other_x2 = other_block.x + other_block.width
+            other_y2 = other_block.y + other_block.height
+            
+            # Check for overlap and shrink if needed
+            if not (x2 < other_x1 or x1 > other_x2 or y2 < other_y1 or y1 > other_y2):
+                if other_y2 <= block.y and y1 < other_y2:
+                    y1 = max(y1, other_y2)
+                if other_y1 >= block.y + block.height and y2 > other_y1:
+                    y2 = min(y2, other_y1)
+                if other_x2 <= block.x and x1 < other_x2:
+                    x1 = max(x1, other_x2)
+                if other_x1 >= block.x + block.width and x2 > other_x1:
+                    x2 = min(x2, other_x1)
     
     # Fill with median color - sharp edges
     draw = ImageDraw.Draw(img)
@@ -81,14 +105,36 @@ def inpaint_solid_background(pil_image: Image.Image, block, bg_info: dict) -> Im
     return img
 
 
-def inpaint_gradient_background(pil_image: Image.Image, block, bg_info: dict) -> Image.Image:
+def inpaint_gradient_background(pil_image: Image.Image, block, bg_info: dict, all_blocks: list = None) -> Image.Image:
     """Inpaint gradient background with directional color interpolation."""
     img = pil_image.copy()
     np_img = np.array(img)
     
-    # Sample colors from edges
-    x1, y1 = block.x, block.y
-    x2, y2 = block.x + block.width, block.y + block.height
+    # Sample colors from edges with minimal padding
+    padding = 2
+    x1, y1 = block.x - padding, block.y - padding
+    x2, y2 = block.x + block.width + padding, block.y + block.height + padding
+    
+    # Check for collisions
+    if all_blocks:
+        for other_block in all_blocks:
+            if other_block.block_id == block.block_id:
+                continue
+            
+            other_x1 = other_block.x
+            other_y1 = other_block.y
+            other_x2 = other_block.x + other_block.width
+            other_y2 = other_block.y + other_block.height
+            
+            if not (x2 < other_x1 or x1 > other_x2 or y2 < other_y1 or y1 > other_y2):
+                if other_y2 <= block.y and y1 < other_y2:
+                    y1 = max(y1, other_y2)
+                if other_y1 >= block.y + block.height and y2 > other_y1:
+                    y2 = min(y2, other_y1)
+                if other_x2 <= block.x and x1 < other_x2:
+                    x1 = max(x1, other_x2)
+                if other_x1 >= block.x + block.width and x2 > other_x1:
+                    x2 = min(x2, other_x1)
     
     # Clamp to image bounds
     x1 = max(0, x1)
@@ -151,7 +197,7 @@ def inpaint_gradient_background(pil_image: Image.Image, block, bg_info: dict) ->
     return Image.fromarray(np_img)
 
 
-def inpaint_textured_background(pil_image: Image.Image, block) -> Image.Image:
+def inpaint_textured_background(pil_image: Image.Image, block, all_blocks: list = None) -> Image.Image:
     """Inpaint textured/photo background using OpenCV's intelligent inpainting."""
     # Convert PIL to OpenCV format
     cv_img = cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2BGR)
@@ -159,12 +205,33 @@ def inpaint_textured_background(pil_image: Image.Image, block) -> Image.Image:
     # Create inpainting mask
     mask = np.zeros(cv_img.shape[:2], dtype=np.uint8)
     
-    # Expand region slightly for better inpainting
-    padding = 3
+    # Expand region slightly for better inpainting, but check for collisions
+    padding = 2  # Reduced from 3
     x1 = max(0, block.x - padding)
     y1 = max(0, block.y - padding)
     x2 = min(cv_img.shape[1], block.x + block.width + padding)
     y2 = min(cv_img.shape[0], block.y + block.height + padding)
+    
+    # Check for collisions
+    if all_blocks:
+        for other_block in all_blocks:
+            if other_block.block_id == block.block_id:
+                continue
+            
+            other_x1 = other_block.x
+            other_y1 = other_block.y
+            other_x2 = other_block.x + other_block.width
+            other_y2 = other_block.y + other_block.height
+            
+            if not (x2 < other_x1 or x1 > other_x2 or y2 < other_y1 or y1 > other_y2):
+                if other_y2 <= block.y and y1 < other_y2:
+                    y1 = max(y1, other_y2)
+                if other_y1 >= block.y + block.height and y2 > other_y1:
+                    y2 = min(y2, other_y1)
+                if other_x2 <= block.x and x1 < other_x2:
+                    x1 = max(x1, other_x2)
+                if other_x1 >= block.x + block.width and x2 > other_x1:
+                    x2 = min(x2, other_x1)
     
     mask[y1:y2, x1:x2] = 255
     
@@ -193,22 +260,25 @@ def inpaint_textured_background(pil_image: Image.Image, block) -> Image.Image:
     return Image.fromarray(result_np)
 
 
-def smart_inpaint_region(pil_image: Image.Image, block) -> Image.Image:
+def smart_inpaint_region(pil_image: Image.Image, block, all_blocks: list = None) -> Image.Image:
     """
     Intelligently inpaint text region based on background type.
+    
+    Args:
+        all_blocks: List of all text blocks to avoid collision during erase
     
     Returns image with text removed and background reconstructed.
     """
     # Analyze background type
     bg_info = analyze_background_type(pil_image, block)
     
-    # Apply appropriate inpainting method
+    # Apply appropriate inpainting method with collision detection
     if bg_info['type'] == 'solid':
-        return inpaint_solid_background(pil_image, block, bg_info)
+        return inpaint_solid_background(pil_image, block, bg_info, all_blocks)
     elif bg_info['type'] == 'gradient':
-        return inpaint_gradient_background(pil_image, block, bg_info)
+        return inpaint_gradient_background(pil_image, block, bg_info, all_blocks)
     else:  # textured
-        return inpaint_textured_background(pil_image, block)
+        return inpaint_textured_background(pil_image, block, all_blocks)
 
 
 def detect_text_style(pil_image: Image.Image, block) -> dict:
@@ -446,7 +516,8 @@ def professional_replace_text(
     new_text: str,
     font_path: str = None,
     color: Tuple[int, int, int] = None,
-    font_size: int = None
+    font_size: int = None,
+    all_blocks: list = None
 ) -> Image.Image:
     """
     Professional-grade text replacement with photorealistic results.
@@ -456,8 +527,18 @@ def professional_replace_text(
     If not provided, properties are extracted from the original text.
     
     This is the master function that combines all techniques.
+    
+    Args:
+        all_blocks: List of all text blocks to avoid collision during erase
     """
-    from editor.text_editor import extract_text_properties, render_replacement_text
+    from editor.text_editor import extract_text_properties, render_replacement_text, detect_all_text
+    
+    # If all_blocks not provided, detect them to avoid collisions
+    if all_blocks is None:
+        try:
+            all_blocks = detect_all_text(pil_image)
+        except:
+            all_blocks = []
     
     # Step 1: Extract ALL properties from original text FIRST
     properties = extract_text_properties(pil_image, block)
@@ -471,7 +552,8 @@ def professional_replace_text(
         properties['font_size'] = font_size
     
     # Step 2: Remove original text with intelligent inpainting
-    img = smart_inpaint_region(pil_image, block)
+    # Pass all_blocks to avoid erasing nearby text
+    img = smart_inpaint_region(pil_image, block, all_blocks=all_blocks)
     
     # Step 3: Render new text with SHARP rendering (NO blur)
     # Use render_replacement_text from text_editor.py which renders at exact size
@@ -506,15 +588,28 @@ def professional_replace_text(
 
 def professional_delete_text(
     pil_image: Image.Image,
-    block
+    block,
+    all_blocks: list = None
 ) -> Image.Image:
     """
     Professional-grade text deletion with photorealistic background reconstruction.
     
     Text is completely removed with no visible artifacts.
+    
+    Args:
+        all_blocks: List of all text blocks to avoid collision during erase
     """
+    from editor.text_editor import detect_all_text
+    
+    # If all_blocks not provided, detect them to avoid collisions
+    if all_blocks is None:
+        try:
+            all_blocks = detect_all_text(pil_image)
+        except:
+            all_blocks = []
+    
     # Step 1: Remove text with intelligent inpainting
-    img = smart_inpaint_region(pil_image, block)
+    img = smart_inpaint_region(pil_image, block, all_blocks=all_blocks)
     
     # Step 2: Post-process to match grain and lighting
     img = post_process_edit(pil_image, img, block)

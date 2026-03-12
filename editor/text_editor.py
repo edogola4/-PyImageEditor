@@ -69,15 +69,17 @@ def detect_all_text(pil_image: Image.Image) -> list[TextBlock]:
     return filtered_blocks
 
 
-def erase_text_region(pil_image: Image.Image, block: TextBlock, padding: int = 6) -> Image.Image:
+def erase_text_region(pil_image: Image.Image, block: TextBlock, padding: int = 2, all_blocks: list = None) -> Image.Image:
     """
     Erase text region with smart background inpainting.
     CRITICAL: NO blur applied - background stays sharp.
+    CRITICAL: Checks for nearby text blocks to avoid overlap.
     
     Args:
         pil_image: Source image
         block: Text block to erase
-        padding: Extra pixels around bounding box
+        padding: Extra pixels around bounding box (reduced from 6 to 2)
+        all_blocks: List of all text blocks to check for collisions
     
     Returns:
         Image with text region erased and background reconstructed
@@ -85,11 +87,51 @@ def erase_text_region(pil_image: Image.Image, block: TextBlock, padding: int = 6
     img = pil_image.copy()
     draw = ImageDraw.Draw(img)
     
-    # Expand bounding box with padding, clamped to image bounds
+    # Start with minimal padding
     x1 = max(0, block.x - padding)
     y1 = max(0, block.y - padding)
     x2 = min(img.width, block.x + block.width + padding)
     y2 = min(img.height, block.y + block.height + padding)
+    
+    # If we have all_blocks, check for collisions and shrink padding if needed
+    if all_blocks:
+        for other_block in all_blocks:
+            # Skip self
+            if other_block.block_id == block.block_id:
+                continue
+            
+            # Check if expanded region would overlap with other block
+            other_x1 = other_block.x
+            other_y1 = other_block.y
+            other_x2 = other_block.x + other_block.width
+            other_y2 = other_block.y + other_block.height
+            
+            # Check for overlap
+            if not (x2 < other_x1 or x1 > other_x2 or y2 < other_y1 or y1 > other_y2):
+                # There's overlap - shrink the erase region to avoid it
+                # Shrink from the side closest to the other block
+                
+                # If other block is above, don't expand upward
+                if other_y2 <= block.y and y1 < other_y2:
+                    y1 = max(y1, other_y2)
+                
+                # If other block is below, don't expand downward  
+                if other_y1 >= block.y + block.height and y2 > other_y1:
+                    y2 = min(y2, other_y1)
+                
+                # If other block is to the left, don't expand leftward
+                if other_x2 <= block.x and x1 < other_x2:
+                    x1 = max(x1, other_x2)
+                
+                # If other block is to the right, don't expand rightward
+                if other_x1 >= block.x + block.width and x2 > other_x1:
+                    x2 = min(x2, other_x1)
+    
+    # Ensure we still have a valid region
+    x1 = max(0, min(x1, img.width - 1))
+    y1 = max(0, min(y1, img.height - 1))
+    x2 = max(x1 + 1, min(x2, img.width))
+    y2 = max(y1 + 1, min(y2, img.height))
     
     # Sample background color from border edges
     np_img = np.array(img)
@@ -297,7 +339,7 @@ def replace_text_in_image(
 def delete_text_region(
     pil_image: Image.Image,
     block: TextBlock,
-    padding: int = 6
+    padding: int = 2
 ) -> Image.Image:
     """
     Delete text region without replacement.
@@ -316,7 +358,7 @@ def delete_text_region(
 def delete_multiple_regions(
     pil_image: Image.Image,
     blocks: list[TextBlock],
-    padding: int = 6
+    padding: int = 2
 ) -> Image.Image:
     """
     Delete multiple text regions in one pass.
@@ -331,7 +373,8 @@ def delete_multiple_regions(
     """
     img = pil_image.copy()
     for block in blocks:
-        img = erase_text_region(img, block, padding)
+        # Pass all blocks to check for collisions
+        img = erase_text_region(img, block, padding, all_blocks=blocks)
     return img
 
 
