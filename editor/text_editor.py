@@ -6,6 +6,7 @@ import cv2
 from collections import Counter
 from utils.ocr_engine import OCREngine
 from utils.font_matcher import match_font_with_style
+from utils.color_utils import sanitize_color, sanitize_color_with_alpha
 
 
 @dataclass
@@ -113,6 +114,9 @@ def erase_text_region(pil_image: Image.Image, block: TextBlock, padding: int = 6
     else:
         bg_color = (255, 255, 255)
     
+    # Sanitize color before drawing
+    bg_color = sanitize_color(bg_color, fallback=(255, 255, 255))
+    
     # Fill region with background color - NO blur
     draw.rectangle([x1, y1, x2, y2], fill=bg_color)
     
@@ -153,7 +157,7 @@ def render_replacement_text(
     
     font_path = properties['best_font_path']
     font_size = properties['font_size']
-    color = properties['color']
+    color = sanitize_color(properties['color'], fallback=(0, 0, 0))
     
     # Load font at EXACT target size - no scaling
     try:
@@ -196,12 +200,13 @@ def render_replacement_text(
     if properties.get('has_shadow'):
         sx = x + properties['shadow_offset'][0]
         sy = y + properties['shadow_offset'][1]
-        draw.text((sx, sy), new_text, font=font, fill=properties['shadow_color'])
+        shadow_color = sanitize_color_with_alpha(properties['shadow_color'], 180, fallback=(80, 80, 80, 180))
+        draw.text((sx, sy), new_text, font=font, fill=shadow_color)
     
     # 2. Outline (if detected)
     if properties.get('has_outline'):
         ow = properties.get('outline_width', 1)
-        outline_color = properties['outline_color']
+        outline_color = sanitize_color_with_alpha(properties['outline_color'], 255, fallback=(0, 0, 0, 255))
         for dx in range(-ow, ow + 1):
             for dy in range(-ow, ow + 1):
                 if dx == 0 and dy == 0:
@@ -209,14 +214,16 @@ def render_replacement_text(
                 draw.text((x + dx, y + dy), new_text, font=font, fill=outline_color)
     
     # 3. Main text - exact color with full alpha
-    draw.text((x, y), new_text, font=font, fill=(*color, 255))
+    text_color = sanitize_color_with_alpha(color, 255)
+    draw.text((x, y), new_text, font=font, fill=text_color)
     
     # Verify overlay has non-transparent pixels
     overlay_array = np.array(text_layer)
     if overlay_array[:, :, 3].max() == 0:
         # Fallback: direct draw on result
         direct_draw = ImageDraw.Draw(result)
-        direct_draw.text((x, y), new_text, font=font, fill=(*color, 255))
+        text_color = sanitize_color_with_alpha(color, 255)
+        direct_draw.text((x, y), new_text, font=font, fill=text_color)
     else:
         # Safe to composite
         result = Image.alpha_composite(result, text_layer)
@@ -362,7 +369,7 @@ def extract_text_color(pil_image: Image.Image, block: TextBlock) -> tuple[int, i
     
     # Return median color of text pixels
     median_color = np.median(text_pixels, axis=0)
-    return (int(median_color[0]), int(median_color[1]), int(median_color[2]))
+    return sanitize_color(median_color, fallback=(0, 0, 0))
 
 
 def calculate_font_size(block: TextBlock, pil_image: Image.Image) -> int:
@@ -413,13 +420,13 @@ def extract_text_properties(pil_image: Image.Image, block: TextBlock) -> dict:
     
     if np.any(text_mask):
         text_pixels = np_region[text_mask]
-        text_color = tuple(int(x) for x in np.median(text_pixels, axis=0))
+        text_color = sanitize_color(np.median(text_pixels, axis=0), fallback=(0, 0, 0))
     else:
         text_color = (0, 0, 0)
     
     if np.any(bg_mask):
         bg_pixels = np_region[bg_mask]
-        bg_color = tuple(int(x) for x in np.median(bg_pixels, axis=0))
+        bg_color = sanitize_color(np.median(bg_pixels, axis=0), fallback=(255, 255, 255))
     else:
         bg_color = (255, 255, 255)
     
@@ -456,7 +463,7 @@ def extract_text_properties(pil_image: Image.Image, block: TextBlock) -> dict:
                                                    block.y + block.height + 3)))
         if np.mean(shadow_region) < np.mean(np_region) - 25:
             has_shadow = True
-            shadow_color = tuple(int(x) for x in np.median(shadow_region.reshape(-1, 3), axis=0))
+            shadow_color = sanitize_color(np.median(shadow_region.reshape(-1, 3), axis=0), fallback=(0, 0, 0))
             shadow_offset = (1, 1)
     
     # Detect outline (check border pixels)
@@ -466,7 +473,7 @@ def extract_text_properties(pil_image: Image.Image, block: TextBlock) -> dict:
     has_outline = np.sum(outline_mask) > (block.width + block.height) * 2
     if has_outline and np.any(outline_mask):
         outline_pixels = np_region[outline_mask > 0]
-        outline_color = tuple(int(x) for x in np.median(outline_pixels, axis=0))
+        outline_color = sanitize_color(np.median(outline_pixels, axis=0), fallback=(0, 0, 0))
         outline_width = 1
     else:
         outline_color = (0, 0, 0)

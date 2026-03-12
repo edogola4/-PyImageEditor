@@ -1,23 +1,82 @@
-"""Color utility functions for text replacement."""
+"""Color sanitization utilities for PIL compatibility."""
 
 
-def rgb_to_hex(rgb: tuple) -> str:
-    """Convert RGB tuple to hex string."""
-    return "#{:02x}{:02x}{:02x}".format(*rgb)
+def sanitize_color(color, fallback=(0, 0, 0)) -> tuple:
+    """
+    Converts ANY color value into a valid PIL-compatible
+    tuple of exactly 3 plain Python ints (R, G, B).
+    
+    Handles: numpy arrays, numpy scalars, float tuples,
+    lists, None values, wrong-length tuples, nested arrays.
+    
+    Never raises — always returns a valid color.
+    """
+    try:
+        if color is None:
+            return fallback
+
+        # Convert numpy arrays and matrices to list first
+        if hasattr(color, 'tolist'):
+            color = color.tolist()
+
+        # Flatten if nested e.g. [[r, g, b]] or array of arrays
+        if isinstance(color, (list, tuple)):
+            # Unwrap single-element nesting
+            while (isinstance(color, (list, tuple)) and
+                   len(color) == 1 and
+                   isinstance(color[0], (list, tuple))):
+                color = color[0]
+
+        # Convert to flat list of numbers
+        if isinstance(color, (list, tuple)):
+            flat = []
+            for v in color:
+                if hasattr(v, 'item'):
+                    flat.append(v.item())  # numpy scalar to python
+                elif isinstance(v, float):
+                    flat.append(int(round(v)))
+                elif isinstance(v, int):
+                    flat.append(v)
+                else:
+                    flat.append(int(v))
+        elif hasattr(color, 'item'):
+            # Single numpy scalar — treat as grayscale
+            v = int(color.item())
+            return (v, v, v)
+        elif isinstance(color, (int, float)):
+            v = int(color)
+            return (v, v, v)
+        else:
+            return fallback
+
+        # Clamp all values to valid 0-255 range
+        flat = [max(0, min(255, int(v))) for v in flat]
+
+        # Normalize to exactly 3 elements (RGB)
+        if len(flat) == 0:
+            return fallback
+        elif len(flat) == 1:
+            return (flat[0], flat[0], flat[0])
+        elif len(flat) == 2:
+            return (flat[0], flat[1], 0)
+        elif len(flat) == 3:
+            return (flat[0], flat[1], flat[2])
+        elif len(flat) >= 4:
+            # Drop alpha — PIL ImageDraw needs RGB not RGBA
+            # for fill color in most draw operations
+            return (flat[0], flat[1], flat[2])
+
+    except Exception:
+        return fallback
 
 
-def hex_to_rgb(hex_color: str) -> tuple:
-    """Convert hex string to RGB tuple."""
-    hex_color = hex_color.lstrip("#")
-    return tuple(int(hex_color[i:i+2], 16) for i in (0, 2, 4))
-
-
-def colors_are_similar(c1: tuple, c2: tuple, threshold=30) -> bool:
-    """Check if two colors are similar within threshold."""
-    return sum(abs(a-b) for a, b in zip(c1, c2)) < threshold
-
-
-def get_contrasting_color(bg_color: tuple) -> tuple:
-    """Get contrasting color (black or white) for given background."""
-    luminance = 0.299*bg_color[0] + 0.587*bg_color[1] + 0.114*bg_color[2]
-    return (0, 0, 0) if luminance > 128 else (255, 255, 255)
+def sanitize_color_with_alpha(
+    color, alpha=255, fallback=(0, 0, 0, 255)
+) -> tuple:
+    """
+    Same as sanitize_color but returns RGBA tuple
+    for use with RGBA image compositing.
+    """
+    rgb = sanitize_color(color, fallback=(0, 0, 0))
+    a = max(0, min(255, int(alpha)))
+    return (rgb[0], rgb[1], rgb[2], a)

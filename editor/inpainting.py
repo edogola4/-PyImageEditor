@@ -4,6 +4,7 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 from scipy.ndimage import gaussian_filter
 from typing import Tuple
+from utils.color_utils import sanitize_color, sanitize_color_with_alpha
 
 
 def analyze_background_type(pil_image: Image.Image, block) -> dict:
@@ -64,7 +65,8 @@ def inpaint_solid_background(pil_image: Image.Image, block, bg_info: dict) -> Im
     img = pil_image.copy()
     
     # Compute median color from border pixels
-    median_color = tuple(np.median(bg_info['pixels'], axis=0).astype(int))
+    median_color = np.median(bg_info['pixels'], axis=0)
+    median_color = sanitize_color(median_color, fallback=(255, 255, 255))
     
     # Fill exact region with median color - NO padding, NO blur
     x1 = max(0, block.x)
@@ -311,13 +313,13 @@ def render_matched_text(
     if properties['has_shadow']:
         shadow_offset = (properties['shadow_offset'][0] * scale, 
                         properties['shadow_offset'][1] * scale)
-        shadow_color = properties['shadow_color'] + (180,)
+        shadow_color = sanitize_color_with_alpha(properties['shadow_color'], 180, fallback=(80, 80, 80, 180))
         draw.text((text_x + shadow_offset[0], text_y + shadow_offset[1]),
                  new_text, fill=shadow_color, font=font)
     
     # Render outline if detected
     if properties['has_outline']:
-        outline_color = properties['outline_color'] + (255,)
+        outline_color = sanitize_color_with_alpha(properties['outline_color'], 255, fallback=(0, 0, 0, 255))
         outline_width = properties['outline_width'] * scale
         # Draw outline by rendering text in 8 directions
         for dx in [-outline_width, 0, outline_width]:
@@ -327,7 +329,7 @@ def render_matched_text(
                              fill=outline_color, font=font)
     
     # Render main text with EXACT detected color
-    text_color = properties['color'] + (int(properties['opacity'] * 255),)
+    text_color = sanitize_color_with_alpha(properties['color'], int(properties['opacity'] * 255), fallback=(0, 0, 0, 255))
     draw.text((text_x, text_y), new_text, fill=text_color, font=font)
     
     # Simulate bold if needed and font doesn't have bold variant
